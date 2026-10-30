@@ -195,7 +195,7 @@ bool WebHost::Initialize(HINSTANCE hInstance, int nCmdShow, int width, int heigh
 
     m_hWnd = CreateWindowExW(
         0, L"ReelKillWebView2HostWindow",
-        L"REELKILL - Esports AI Cut",
+        L"REELKILL v2.0 - Esports AI Cut",
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT, width, height,
         NULL, NULL, hInstance, this

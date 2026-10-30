@@ -2,7 +2,7 @@
 <html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>REELKILL</title><link rel="stylesheet" href="styles.css"></head><body>
 <div class="app">
-<aside class="sb"><img class="logo" src="assets/logo.jpg" alt="REELKILL"><div class="vr">v1.4</div>
+<aside class="sb"><img class="logo" src="assets/logo.jpg" alt="REELKILL"><div class="vr">v2.0</div>
 <nav id="nav" role="tablist"><button class="nv on" data-view="dashboard" role="tab" aria-selected="true">DASHBOARD</button><button class="nv" data-view="results" role="tab" aria-selected="false">HASIL SCAN</button><button class="nv" data-view="guide" role="tab" aria-selected="false">PANDUAN</button><button class="nv" data-view="about" role="tab" aria-selected="false">TENTANG</button></nav>
 <div class="status" id="status" role="status">Ready</div></aside>
 <main>
@@ -32,8 +32,8 @@
 <div class="card step"><span class="num">2</span><div><b>Area Detection (ROI)</b><div class="mt">Tarik kotak langsung di atas preview agar pas dengan kill feed.</div></div></div>
 <div class="card step"><span class="num">3</span><div><b>Hasil Scan</b><div class="mt">Muat video dan CSV, pilih klip, lalu klik Export Selected.</div></div></div>
 <div class="card" style="border-color:var(--cy)"><b>Tips</b><div class="mt">Letakkan ffmpeg.exe di folder aplikasi sebelum mengekspor.</div></div></section>
-<section class="view" id="view-about"><div><h2 style="font-size:34px;color:var(--cy)">REEL<span class="kl">KILL</span> v1.4</h2><div class="mt">Aplikasi analisis kill feed otomatis untuk PUBG Mobile.</div></div>
-<div class="card"><b>Baru di v1.4</b><div class="mt" style="line-height:2;font-size:14px">Filter selisih piksel, scan hingga 10–20x lebih cepat<br>ROI auto-scaling untuk resolusi berbeda<br>Ekspor multi-klip dengan merge otomatis<br>Antarmuka baru dengan animasi halus</div></div>
+<section class="view" id="view-about"><div><h2 style="font-size:34px;color:var(--cy)">REEL<span class="kl">KILL</span> v2.0</h2><div class="mt">Aplikasi analisis kill feed otomatis untuk PUBG Mobile.</div></div>
+<div class="card"><b>Baru di v2.0</b><div class="mt" style="line-height:2;font-size:14px">Antarmuka baru WebView2 modern dan responsif<br>Filter selisih piksel (Motion Gate), scan hingga 10–20x lebih cepat<br>ROI auto-scaling & visual selector interaktif<br>Ekspor multi-klip lossless cut dengan merge otomatis</div></div>
 <div class="chips"><span class="chip">C++</span><span class="chip">OpenCV</span><span class="chip">OcrLite</span><span class="chip">libmpv</span><span class="chip">FFmpeg</span><span class="chip">WebView2</span></div></section>
 </main></div>
 <dialog id="roiDlg"><h2>Set Area Deteksi (ROI)</h2><div class="mt">Tarik kotak untuk menggeser, tarik sudut untuk mengubah ukuran.</div>
