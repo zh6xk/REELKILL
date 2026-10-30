@@ -323,7 +323,8 @@ void WorkerThread(string vidPath, string outDir, string targetName, double preSe
         if (activeRoi.x + activeRoi.width > vW) activeRoi.width = vW - activeRoi.x;
         if (activeRoi.y + activeRoi.height > vH) activeRoi.height = vH - activeRoi.y;
 
-        OCR_PARAM param = { 50, 1024, 0.5f, 0.3f, 1.6f, 1, 1 };
+        // Optimized OCR_PARAM: doAngle=0, mostAngle=0 (Skip angle classifier for horizontal kill feed text)
+        OCR_PARAM param = { 50, 1024, 0.5f, 0.3f, 1.6f, 0, 0 };
         std::error_code ecTemp;
         fs::path tempDir = fs::temp_directory_path(ecTemp);
         if (ecTemp || !fs::exists(tempDir)) {
