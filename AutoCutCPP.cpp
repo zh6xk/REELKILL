@@ -1297,7 +1297,7 @@ int main() {
     CoInitialize(NULL);
     WNDCLASSA wc = { 0 }; wc.lpfnWndProc = MainProc; wc.hInstance = GetModuleHandle(NULL); wc.lpszClassName = "AutoCutAllInOne";
     wc.hbrBackground = CreateSolidBrush(COL_BG_MAIN); wc.hCursor = LoadCursor(NULL, IDC_ARROW); RegisterClassA(&wc);
-    hMainFrame = CreateWindowExA(0, "AutoCutAllInOne", "Auto Cut Pro - 1.1", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 760, NULL, NULL, GetModuleHandle(NULL), NULL);
+    hMainFrame = CreateWindowExA(0, "AutoCutAllInOne", "Auto Cut Pro - 1.4", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 760, NULL, NULL, GetModuleHandle(NULL), NULL);
     ShowWindow(hMainFrame, SW_SHOW);
 
     MSG msg = { 0 };
