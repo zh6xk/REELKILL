@@ -437,6 +437,26 @@ void WebHost::SendError(const std::string& message) {
     SendJsonToUI(ss.str());
 }
 
+void WebHost::SendResultsLoaded(const std::string& videoUrl, double duration,
+                                const std::vector<ExportClip>& clips) {
+    std::ostringstream ss;
+    ss << "{\"v\":1,\"type\":\"resultsLoaded\",\"payload\":{"
+       << "\"videoUrl\":\"" << EscapeJsonString(videoUrl) << "\","
+       << "\"duration\":" << std::fixed << std::setprecision(2) << duration << ","
+       << "\"clips\":[";
+    for (size_t i = 0; i < clips.size(); i++) {
+        if (i > 0) ss << ",";
+        ss << "{"
+           << "\"start\":" << std::fixed << std::setprecision(2) << clips[i].start << ","
+           << "\"end\":" << std::fixed << std::setprecision(2) << clips[i].end << ","
+           << "\"label\":\"" << EscapeJsonString(clips[i].label) << "\","
+           << "\"score\":0.9"
+           << "}";
+    }
+    ss << "]}}";
+    SendJsonToUI(ss.str());
+}
+
 void WebHost::HandleWebMessage(const std::string& json) {
     std::string type = ExtractJsonString(json, "type");
     if (type.empty()) return;
@@ -462,6 +482,12 @@ void WebHost::HandleWebMessage(const std::string& json) {
         HandleStartScan(video, output, player, pre, post, roiX, roiY, roiW, roiH, roiPreset);
     } else if (type == "stopScan") {
         HandleStopScan();
+    } else if (type == "loadResults") {
+        HandleLoadResults();
+    } else if (type == "exportClips") {
+        HandleExportClips(json);
+    } else if (type == "showInExplorer") {
+        HandleShowInExplorer();
     }
 }
 
@@ -559,6 +585,194 @@ void WebHost::HandleStartScan(const std::string& video, const std::string& outpu
 void WebHost::HandleStopScan() {
     m_scanner.Stop();
     SendScanDone(true);
+}
+
+void WebHost::HandleLoadResults() {
+    // 1. Dialog pilih file video
+    char szVideo[MAX_PATH] = { 0 };
+    OPENFILENAMEA ofn = { 0 };
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = m_hWnd;
+    ofn.lpstrTitle = "Pilih Video Rekaman";
+    ofn.lpstrFilter = "Video Files (*.mp4;*.mkv)\0*.mp4;*.mkv\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFile = szVideo;
+    ofn.nMaxFile = sizeof(szVideo);
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+
+    if (!GetOpenFileNameA(&ofn)) return;
+
+    std::string videoPath(szVideo);
+    fs::path vp(Utf8ToUtf16(videoPath));
+
+    // 2. Cari file CSV pendamping (default: nama_video.csv)
+    fs::path expectedCsv = vp;
+    expectedCsv.replace_extension(".csv");
+
+    std::string csvPath;
+    if (fs::exists(expectedCsv)) {
+        csvPath = Utf16ToUtf8(expectedCsv.wstring());
+    } else {
+        // Tampilkan dialog buka CSV jika tidak ditemukan otomatis
+        char szCsv[MAX_PATH] = { 0 };
+        OPENFILENAMEA ofnCsv = { 0 };
+        ofnCsv.lStructSize = sizeof(ofnCsv);
+        ofnCsv.hwndOwner = m_hWnd;
+        ofnCsv.lpstrTitle = "Pilih File Hasil Scan (.csv)";
+        ofnCsv.lpstrFilter = "CSV Files (*.csv)\0*.csv\0All Files (*.*)\0*.*\0";
+        ofnCsv.lpstrFile = szCsv;
+        ofnCsv.nMaxFile = sizeof(szCsv);
+        ofnCsv.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+
+        if (GetOpenFileNameA(&ofnCsv)) {
+            csvPath = std::string(szCsv);
+        }
+    }
+
+    if (csvPath.empty() || !fs::exists(Utf8ToUtf16(csvPath))) {
+        SendError("File CSV hasil scan tidak ditemukan.");
+        return;
+    }
+
+    // 3. Baca dan parse CSV
+    std::vector<ExportClip> clips;
+    std::ifstream file(Utf8ToUtf16(csvPath));
+    std::string line;
+    while (std::getline(file, line)) {
+        if (line.empty()) continue;
+        if (line.back() == '\r') line.pop_back();
+        std::stringstream ss(line);
+        std::string startStr, endStr, labelStr;
+        if (std::getline(ss, startStr, ',') && std::getline(ss, endStr, ',')) {
+            std::getline(ss, labelStr);
+            if (!labelStr.empty() && labelStr.front() == '"') labelStr.erase(0, 1);
+            if (!labelStr.empty() && labelStr.back() == '"') labelStr.pop_back();
+            if (labelStr.empty()) labelStr = "kill";
+
+            double s = 0.0, e = 0.0;
+            try { s = std::stod(startStr); } catch (...) { s = 0.0; }
+            try { e = std::stod(endStr); } catch (...) { e = 0.0; }
+            if (e < s) e = s;
+
+            clips.push_back({ s, e, labelStr });
+        }
+    }
+    file.close();
+
+    // 4. Hitung durasi video via OpenCV
+    double duration = 0.0;
+    try {
+        cv::VideoCapture cap(videoPath);
+        if (cap.isOpened()) {
+            double fps = cap.get(cv::CAP_PROP_FPS);
+            double totalFrames = cap.get(cv::CAP_PROP_FRAME_COUNT);
+            if (fps > 0 && totalFrames > 0) {
+                duration = totalFrames / fps;
+            }
+            cap.release();
+        }
+    } catch (...) {}
+
+    if (duration <= 0.0 && !clips.empty()) {
+        for (const auto& c : clips) {
+            if (c.end > duration) duration = c.end;
+        }
+        duration += 10.0;
+    }
+
+    // 5. Map media virtual host ke parent folder
+    MapMediaFolder(vp.parent_path().wstring());
+    m_currentLoadedVideo = videoPath;
+
+    // URL virtual host media.reelkill
+    std::string filename = Utf16ToUtf8(vp.filename().wstring());
+    std::string videoUrl = "https://media.reelkill/" + filename;
+
+    SendResultsLoaded(videoUrl, duration, clips);
+    SendToast("Berhasil memuat " + std::to_string(clips.size()) + " klip dari CSV");
+}
+
+void WebHost::HandleExportClips(const std::string& json) {
+    if (m_currentLoadedVideo.empty() || !fs::exists(Utf8ToUtf16(m_currentLoadedVideo))) {
+        SendError("Belum ada video yang dimuat untuk diekspor!");
+        return;
+    }
+
+    // Parse array clips: [{start,end}, ...]
+    std::vector<ExportClip> clips;
+    size_t pos = json.find("\"clips\"");
+    if (pos != std::string::npos) {
+        pos = json.find('[', pos);
+        if (pos != std::string::npos) {
+            size_t endArr = json.find(']', pos);
+            if (endArr != std::string::npos) {
+                std::string arrContent = json.substr(pos + 1, endArr - pos - 1);
+                size_t objPos = 0;
+                while ((objPos = arrContent.find('{', objPos)) != std::string::npos) {
+                    size_t objEnd = arrContent.find('}', objPos);
+                    if (objEnd == std::string::npos) break;
+                    std::string objStr = arrContent.substr(objPos, objEnd - objPos + 1);
+
+                    double s = ExtractJsonNumber(objStr, "start", 0.0);
+                    double e = ExtractJsonNumber(objStr, "end", 0.0);
+                    std::string label = ExtractJsonString(objStr, "label");
+                    if (label.empty()) label = "kill";
+
+                    if (e > s) {
+                        clips.push_back({ s, e, label });
+                    }
+                    objPos = objEnd + 1;
+                }
+            }
+        }
+    }
+
+    if (clips.empty()) {
+        SendError("Tidak ada klip valid yang dipilih untuk diekspor!");
+        return;
+    }
+
+    fs::path vp(Utf8ToUtf16(m_currentLoadedVideo));
+    std::string outFolder = Utf16ToUtf8(vp.parent_path().wstring());
+    m_lastExportPath = outFolder;
+
+    SendToast("Memulai ekspor " + std::to_string(clips.size()) + " klip...");
+
+    ExportCallbacks cb;
+    cb.onProgress = [this](int current, int total, const std::string& status) {
+        SendToast("Mengekspor: " + std::to_string(current) + " / " + std::to_string(total) + " (" + status + ")");
+    };
+    cb.onLog = [this](const std::string& line) {
+        SendLog(line);
+    };
+    cb.onError = [this](const std::string& err) {
+        SendError(err);
+    };
+    cb.onDone = [this](bool success, const std::string& msg) {
+        if (success) {
+            SendToast(msg);
+        } else {
+            SendError("Ekspor gagal: " + msg);
+        }
+    };
+
+    // Jalankan ekspor batch (lossless merge) di background thread
+    std::thread([this, clips, outFolder, cb]() {
+        m_exporter.ExportBatch(m_currentLoadedVideo, outFolder, clips, true, cb);
+    }).detach();
+}
+
+void WebHost::HandleShowInExplorer() {
+    std::string target = m_lastExportPath;
+    if (target.empty() && !m_currentLoadedVideo.empty()) {
+        fs::path vp(Utf8ToUtf16(m_currentLoadedVideo));
+        target = Utf16ToUtf8(vp.parent_path().wstring());
+    }
+
+    if (!target.empty() && fs::exists(Utf8ToUtf16(target))) {
+        ShellExecuteA(NULL, "open", "explorer.exe", ("/select,\"" + target + "\"").c_str(), NULL, SW_SHOW);
+    } else {
+        SendError("Folder tujuan belum tersedia.");
+    }
 }
 
 } // namespace ReelKill

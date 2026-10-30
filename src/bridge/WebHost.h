@@ -37,6 +37,8 @@ public:
     void SendFileSelected(const std::string& target, const std::string& path);
     void SendToast(const std::string& message);
     void SendError(const std::string& message);
+    void SendResultsLoaded(const std::string& videoUrl, double duration,
+                           const std::vector<ExportClip>& clips);
 
     HWND GetHwnd() const { return m_hWnd; }
 
@@ -59,6 +61,9 @@ private:
                          int roiX, int roiY, int roiW, int roiH,
                          const std::string& roiPreset);
     void HandleStopScan();
+    void HandleLoadResults();
+    void HandleExportClips(const std::string& json);
+    void HandleShowInExplorer();
 
     // Mapping virtual host media.reelkill secara dinamis ke folder video
     void MapMediaFolder(const std::wstring& folderPath);
@@ -72,6 +77,8 @@ private:
     bool m_isWebViewReady;
 
     std::wstring m_currentMediaFolder;
+    std::string m_currentLoadedVideo;
+    std::string m_lastExportPath;
 
     // Backend Core Engine
     Scanner m_scanner;
