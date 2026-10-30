@@ -2,9 +2,9 @@
   <img src="logo.png" width="220" alt="REELKILL Logo" />
 </p>
 
-# Auto Cut Pro (REELKILL) v1.4
+# REELKILL v1.4
 
-**Auto Cut Pro** adalah aplikasi desktop berbasis C++ Native yang dirancang untuk mengotomatisasi proses *highlighting* video game. Aplikasi ini menggunakan kecerdasan buatan (OCR) untuk mendeteksi momen penting (seperti Kill Feed) dan memotong klip secara otomatis tanpa mengurangi kualitas video.
+**REELKILL** adalah aplikasi desktop berbasis C++ Native yang dirancang untuk mengotomatisasi proses *highlighting* video game PUBG Mobile. Aplikasi ini menggunakan kecerdasan buatan (OCR) untuk mendeteksi momen penting (seperti Kill Feed) dan memotong klip secara otomatis tanpa mengurangi kualitas video.
 
 Dibuat untuk performa maksimal dengan penggunaan resource yang minim.
 
