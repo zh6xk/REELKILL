@@ -117,7 +117,12 @@ int currentViewID = -1;
 
 const string PLAYER_PLACEHOLDER = "Masukkan nama player...";
 
-struct RoiPreset { string name; int x, y, w, h; };
+struct RoiPreset {
+    string name;
+    int x, y, w, h;
+    int baseW = 0;
+    int baseH = 0;
+};
 struct CutSegment { double start; double end; string label; };
 OCR_HANDLE hOcrEngine = NULL;
 atomic<bool> isRunning(false);
@@ -271,6 +276,7 @@ void DrawMatToHwnd(HWND hWnd, const cv::Mat& imgSrc) {
 }
 
 void WorkerThread(string vidPath, string outDir, string targetName, double preSec, double postSec) {
+    fs::path tempPath;
     try {
         isRunning = true;
         fs::path exeDir(GetExeDir()); fs::path modelsDir = exeDir / "models";
@@ -291,15 +297,42 @@ void WorkerThread(string vidPath, string outDir, string targetName, double preSe
         int totalFrames = (int)cap.get(CAP_PROP_FRAME_COUNT);
         double fps = cap.get(CAP_PROP_FPS); if (fps <= 0) fps = 30.0;
         int vW = (int)cap.get(CAP_PROP_FRAME_WIDTH); int vH = (int)cap.get(CAP_PROP_FRAME_HEIGHT);
-        if (!g_roiSet || g_roiRect.width <= 0) g_roiRect = Rect((int)(vW * 0.64), (int)(vH * 0.39), (int)(vW * 0.15), (int)(vH * 0.13));
+        Rect activeRoi = g_roiRect;
+        int curSel = (int)SendMessageA(hComboPreset, CB_GETCURSEL, 0, 0);
+        if (curSel >= 0 && curSel < (int)g_presets.size()) {
+            const auto& pr = g_presets[curSel];
+            if (pr.baseW > 0 && pr.baseH > 0 && (pr.baseW != vW || pr.baseH != vH)) {
+                double sx = (double)vW / pr.baseW;
+                double sy = (double)vH / pr.baseH;
+                activeRoi.x = (int)(pr.x * sx);
+                activeRoi.y = (int)(pr.y * sy);
+                activeRoi.width = (int)(pr.w * sx);
+                activeRoi.height = (int)(pr.h * sy);
+                LogToUI("[INFO] Preset di-scale: " + to_string(pr.baseW) + "x" + to_string(pr.baseH) + " -> " + to_string(vW) + "x" + to_string(vH));
+            }
+        }
+        if (!g_roiSet || activeRoi.width <= 0 || activeRoi.height <= 0) {
+            activeRoi = Rect((int)(vW * 0.64), (int)(vH * 0.39), (int)(vW * 0.15), (int)(vH * 0.13));
+        }
+        if (activeRoi.x < 0) activeRoi.x = 0;
+        if (activeRoi.y < 0) activeRoi.y = 0;
+        if (activeRoi.x + activeRoi.width > vW) activeRoi.width = vW - activeRoi.x;
+        if (activeRoi.y + activeRoi.height > vH) activeRoi.height = vH - activeRoi.y;
 
         OCR_PARAM param = { 50, 1024, 0.5f, 0.3f, 1.6f, 1, 1 };
-        fs::path tempPath = exeDir / "temp_v44.bmp"; string fullPath = tempPath.string(); replace(fullPath.begin(), fullPath.end(), '\\', '/');
+        std::error_code ecTemp;
+        fs::path tempDir = fs::temp_directory_path(ecTemp);
+        if (ecTemp || !fs::exists(tempDir)) {
+            tempDir = exeDir;
+        }
+        tempPath = tempDir / ("autocut_temp_" + to_string(GetCurrentProcessId()) + ".bmp");
+        string fullPath = tempPath.string();
+        replace(fullPath.begin(), fullPath.end(), '\\', '/');
         string safeTarget = NormalizeForMatch(targetName);
         LogToUI("[START] Analisis dimulai...");
 
-        double checkInterval = 0.8; int frameStep = (int)(fps * checkInterval); if (frameStep < 1) frameStep = 1;
-        vector<CutSegment> segments; Mat frame, crop, gray, binary;
+        double checkInterval = 0.35; int frameStep = (int)(fps * checkInterval); if (frameStep < 1) frameStep = 1;
+        vector<CutSegment> segments; Mat frame, crop, processedCrop;
         int processedFrames = 0; int hitCount = 0;
         auto startTime = high_resolution_clock::now(); double avgTimePerStep = 0.0;
 
@@ -310,28 +343,35 @@ void WorkerThread(string vidPath, string outDir, string targetName, double preSe
             for (int k = 0; k < frameStep - 1; k++) { cap.grab(); processedFrames++; }
             processedFrames++;
 
-            if (g_roiRect.x + g_roiRect.width > frame.cols) g_roiRect.width = frame.cols - g_roiRect.x;
-            if (g_roiRect.y + g_roiRect.height > frame.rows) g_roiRect.height = frame.rows - g_roiRect.y;
+            if (activeRoi.x + activeRoi.width > frame.cols) activeRoi.width = frame.cols - activeRoi.x;
+            if (activeRoi.y + activeRoi.height > frame.rows) activeRoi.height = frame.rows - activeRoi.y;
 
-            crop = frame(g_roiRect); if (!crop.empty()) {
-                cvtColor(crop, gray, COLOR_BGR2GRAY);
-                threshold(gray, binary, 0, 255, THRESH_BINARY | THRESH_OTSU);
-                DrawMatToHwnd(hPreviewBox, binary);
+            crop = frame(activeRoi); if (!crop.empty()) {
+                // Upscale 2x bicubic for small text clarity, preserve natural color contrast for RapidOcr
+                resize(crop, processedCrop, Size(), 2.0, 2.0, INTER_CUBIC);
+                DrawMatToHwnd(hPreviewBox, processedCrop);
 
-                if (imwrite(fullPath, binary)) {
+                if (imwrite(fullPath, processedCrop)) {
                     if (OcrDetect(hOcrEngine, fullPath.c_str(), "", &param)) {
                         int len = OcrGetLen(hOcrEngine);
                         if (len > 0) {
                             vector<char> buf(len + 1); OcrGetResult(hOcrEngine, buf.data(), len + 1);
                             string resRaw = string(buf.data()); string resSafe = NormalizeForMatch(resRaw);
                             double similarity = GetBestSimilarity(resSafe, safeTarget);
-                            if (similarity >= 0.60) {
+                            if (similarity >= 0.55) {
                                 double currentTime = processedFrames / fps;
                                 double idealStart = max(0.0, currentTime - preSec); double idealEnd = min((double)totalFrames / fps, currentTime + postSec);
                                 if (!segments.empty() && idealStart <= segments.back().end + 2.0) { segments.back().end = max(segments.back().end, idealEnd); }
                                 else { hitCount++; LogToUI("[HIT #" + to_string(hitCount) + "] Kill Detected at " + FormatTimeSafe((int)currentTime)); segments.push_back({ idealStart, idealEnd, "kill" }); }
                             }
                         }
+                    }
+                }
+                else {
+                    static bool s_warned = false;
+                    if (!s_warned) {
+                        LogToUI("[WARN] Gagal menulis temp image ke: " + fullPath);
+                        s_warned = true;
                     }
                 }
             }
@@ -350,7 +390,9 @@ void WorkerThread(string vidPath, string outDir, string targetName, double preSe
                 SetWindowTextA(hLblEta, etaStr.c_str());
             }
         }
-        cap.release(); remove(fullPath.c_str());
+        cap.release();
+        std::error_code ecRem;
+        if (!tempPath.empty()) fs::remove(tempPath, ecRem);
 
         if (!segments.empty()) {
             fs::path csvPath = fs::path(vidPath).replace_extension(".csv");
@@ -379,7 +421,11 @@ void WorkerThread(string vidPath, string outDir, string targetName, double preSe
         LogToUI("=== SELESAI ===");
         MessageBeep(MB_OK);
     }
-    catch (...) {}
+    catch (...) {
+        std::error_code ecRem;
+        if (!tempPath.empty()) fs::remove(tempPath, ecRem);
+        LogToUI("[ERROR] Terjadi exception saat analisis video.");
+    }
     isRunning = false; EnableWindow(hBtnStart, TRUE);
 }
 
@@ -514,10 +560,169 @@ void AutoCutResize(int w, int h) {
     MoveWindow(hBtnStart, xBase, btnY, startW, btnH, TRUE);
     MoveWindow(hBtnCancel, xBase + startW + 10, btnY, stopW, btnH, TRUE);
 }
-void OpenRoiSelector(string v) { VideoCapture c(v); if (!c.isOpened())return; int vw = (int)c.get(CAP_PROP_FRAME_WIDTH); int vh = (int)c.get(CAP_PROP_FRAME_HEIGHT); int x = g_roiRect.x, y = g_roiRect.y, w = g_roiRect.width, h = g_roiRect.height; if (w <= 0) { x = (int)(vw * 0.64); y = (int)(vh * 0.39); w = (int)(vw * 0.15); h = (int)(vh * 0.13); } string n = "SETTING AREA - ENTER TO SAVE"; namedWindow(n, WINDOW_NORMAL); resizeWindow(n, 1280, (int)(1280.0 * vh / vw)); createTrackbar("X", n, &x, vw); createTrackbar("Y", n, &y, vh); createTrackbar("W", n, &w, vw); createTrackbar("H", n, &h, vh); Mat f, p; c.read(f); while (1) { f.copyTo(p); if (x < 0)x = 0; if (y < 0)y = 0; if (x + w > vw)w = vw - x; if (y + h > vh)h = vh - y; rectangle(p, Rect(x, y, w, h), Scalar(0, 255, 0), 3); imshow(n, p); if (waitKey(30) == 13) { g_roiRect = Rect(x, y, w, h); g_roiSet = true; destroyWindow(n); break; } if (getWindowProperty(n, WND_PROP_VISIBLE) < 1)break; } }
-void LoadPresetsFromFile() { g_presets.clear(); SendMessageA(hComboPreset, CB_RESETCONTENT, 0, 0); fs::path presetPath = fs::path(GetExeDir()) / "roi_presets.txt"; ifstream file(presetPath); if (file.is_open()) { string line; while (getline(file, line)) { if (line.empty()) continue; char name[128]; int x, y, w, h; if (sscanf(line.c_str(), "%127[^|]|%d|%d|%d|%d", name, &x, &y, &w, &h) == 5) { g_presets.push_back({ string(name), x, y, w, h }); SendMessageA(hComboPreset, CB_ADDSTRING, 0, (LPARAM)name); } } file.close(); } if (g_presets.empty()) { SendMessageA(hComboPreset, CB_ADDSTRING, 0, (LPARAM)"- Default -"); g_roiRect = Rect(0, 0, 0, 0); g_roiSet = false; } else { SendMessageA(hComboPreset, CB_SETCURSEL, 0, 0); g_roiRect = Rect(g_presets[0].x, g_presets[0].y, g_presets[0].w, g_presets[0].h); g_roiSet = true; } }
-void SavePresetToFile(string n, Rect r) { bool found = false; for (auto& p : g_presets) { if (p.name == n) { p.x = r.x; p.y = r.y; p.w = r.width; p.h = r.height; found = true; break; } } if (!found)g_presets.push_back({ n,r.x,r.y,r.width,r.height }); fs::path p = fs::path(GetExeDir()) / "roi_presets.txt"; ofstream f(p); if (f.is_open()) { for (const auto& pr : g_presets)f << pr.name << "|" << pr.x << "|" << pr.y << "|" << pr.w << "|" << pr.h << endl; f.close(); MessageBoxA(hMainFrame, "Tersimpan!", "Success", MB_OK); LoadPresetsFromFile(); } }
-void DeleteCurrentPreset() { int i = (int)SendMessageA(hComboPreset, CB_GETCURSEL, 0, 0); if (i < 0 || g_presets.empty())return; if (MessageBoxA(hMainFrame, "Hapus?", "Konfirmasi", MB_YESNO) == IDYES) { g_presets.erase(g_presets.begin() + i); fs::path p = fs::path(GetExeDir()) / "roi_presets.txt"; ofstream f(p); if (f.is_open()) { for (const auto& pr : g_presets)f << pr.name << "|" << pr.x << "|" << pr.y << "|" << pr.w << "|" << pr.h << endl; f.close(); } LoadPresetsFromFile(); } }
+void OpenRoiSelector(string v) {
+    VideoCapture c(v);
+    if (!c.isOpened()) {
+        MessageBoxA(hMainFrame, "Gagal membuka video untuk ROI selector!", "Error", MB_ICONERROR);
+        return;
+    }
+    int vw = (int)c.get(CAP_PROP_FRAME_WIDTH);
+    int vh = (int)c.get(CAP_PROP_FRAME_HEIGHT);
+    int x = g_roiRect.x, y = g_roiRect.y, w = g_roiRect.width, h = g_roiRect.height;
+    if (w <= 0) {
+        x = (int)(vw * 0.64);
+        y = (int)(vh * 0.39);
+        w = (int)(vw * 0.15);
+        h = (int)(vh * 0.13);
+    }
+    if (x >= vw) x = 0;
+    if (y >= vh) y = 0;
+    if (x + w > vw) w = vw - x;
+    if (y + h > vh) h = vh - y;
+
+    string n = "SETTING AREA - ENTER TO SAVE";
+    namedWindow(n, WINDOW_NORMAL);
+    int winH = (vw > 0) ? (int)(1280.0 * vh / vw) : 720;
+    resizeWindow(n, 1280, winH);
+    createTrackbar("X", n, &x, vw);
+    createTrackbar("Y", n, &y, vh);
+    createTrackbar("W", n, &w, vw);
+    createTrackbar("H", n, &h, vh);
+    Mat f, p;
+    c.read(f);
+    while (1) {
+        f.copyTo(p);
+        if (x < 0) x = 0;
+        if (y < 0) y = 0;
+        if (x + w > vw) w = vw - x;
+        if (y + h > vh) h = vh - y;
+        rectangle(p, Rect(x, y, w, h), Scalar(0, 255, 0), 3);
+        imshow(n, p);
+        int key = waitKey(30);
+        if (key == 13) {
+            g_roiRect = Rect(x, y, w, h);
+            g_roiSet = true;
+            int curSel = (int)SendMessageA(hComboPreset, CB_GETCURSEL, 0, 0);
+            if (curSel >= 0 && curSel < (int)g_presets.size()) {
+                g_presets[curSel].baseW = vw;
+                g_presets[curSel].baseH = vh;
+                g_presets[curSel].x = x;
+                g_presets[curSel].y = y;
+                g_presets[curSel].w = w;
+                g_presets[curSel].h = h;
+            }
+            destroyWindow(n);
+            break;
+        }
+        if (getWindowProperty(n, WND_PROP_VISIBLE) < 1) break;
+    }
+    c.release();
+}
+
+void LoadPresetsFromFile(string selectName = "") {
+    g_presets.clear();
+    SendMessageA(hComboPreset, CB_RESETCONTENT, 0, 0);
+    fs::path presetPath = fs::path(GetExeDir()) / "roi_presets.txt";
+    ifstream file(presetPath);
+    if (file.is_open()) {
+        string line;
+        while (getline(file, line)) {
+            if (line.empty()) continue;
+            char name[128] = { 0 };
+            int x = 0, y = 0, w = 0, h = 0, bw = 0, bh = 0;
+            int count = sscanf(line.c_str(), "%127[^|]|%d|%d|%d|%d|%d|%d", name, &x, &y, &w, &h, &bw, &bh);
+            if (count >= 5) {
+                if (count < 7) { bw = 0; bh = 0; }
+                g_presets.push_back({ string(name), x, y, w, h, bw, bh });
+                SendMessageA(hComboPreset, CB_ADDSTRING, 0, (LPARAM)name);
+            }
+        }
+        file.close();
+    }
+    if (g_presets.empty()) {
+        SendMessageA(hComboPreset, CB_ADDSTRING, 0, (LPARAM)"- Default -");
+        g_roiRect = Rect(0, 0, 0, 0);
+        g_roiSet = false;
+    }
+    else {
+        int targetIdx = 0;
+        if (!selectName.empty()) {
+            for (size_t i = 0; i < g_presets.size(); i++) {
+                if (g_presets[i].name == selectName) {
+                    targetIdx = (int)i;
+                    break;
+                }
+            }
+        }
+        SendMessageA(hComboPreset, CB_SETCURSEL, targetIdx, 0);
+        g_roiRect = Rect(g_presets[targetIdx].x, g_presets[targetIdx].y, g_presets[targetIdx].w, g_presets[targetIdx].h);
+        g_roiSet = true;
+    }
+}
+
+void SavePresetToFile(string n, Rect r, int baseW = 0, int baseH = 0) {
+    if (n.empty()) return;
+    if (baseW <= 0 || baseH <= 0) {
+        char vidPath[MAX_PATH] = { 0 };
+        GetWindowTextA(hEditFile, vidPath, MAX_PATH);
+        if (strlen(vidPath) > 0 && fs::exists(vidPath)) {
+            VideoCapture cap(vidPath);
+            if (cap.isOpened()) {
+                baseW = (int)cap.get(CAP_PROP_FRAME_WIDTH);
+                baseH = (int)cap.get(CAP_PROP_FRAME_HEIGHT);
+                cap.release();
+            }
+        }
+    }
+    bool found = false;
+    for (auto& p : g_presets) {
+        if (p.name == n) {
+            p.x = r.x; p.y = r.y; p.w = r.width; p.h = r.height;
+            if (baseW > 0 && baseH > 0) { p.baseW = baseW; p.baseH = baseH; }
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        g_presets.push_back({ n, r.x, r.y, r.width, r.height, baseW, baseH });
+    }
+
+    fs::path p = fs::path(GetExeDir()) / "roi_presets.txt";
+    ofstream f(p);
+    if (!f.is_open()) {
+        MessageBoxA(hMainFrame, "Gagal menyimpan preset! Periksa hak akses file.", "Error", MB_ICONERROR);
+        return;
+    }
+    for (const auto& pr : g_presets) {
+        f << pr.name << "|" << pr.x << "|" << pr.y << "|" << pr.w << "|" << pr.h;
+        if (pr.baseW > 0 && pr.baseH > 0) {
+            f << "|" << pr.baseW << "|" << pr.baseH;
+        }
+        f << "\n";
+    }
+    f.close();
+    MessageBoxA(hMainFrame, "Preset berhasil disimpan!", "Success", MB_OK);
+    LoadPresetsFromFile(n);
+}
+
+void DeleteCurrentPreset() {
+    int i = (int)SendMessageA(hComboPreset, CB_GETCURSEL, 0, 0);
+    if (i < 0 || g_presets.empty()) return;
+    if (MessageBoxA(hMainFrame, ("Hapus preset '" + g_presets[i].name + "'?").c_str(), "Konfirmasi", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+        g_presets.erase(g_presets.begin() + i);
+        fs::path p = fs::path(GetExeDir()) / "roi_presets.txt";
+        ofstream f(p);
+        if (f.is_open()) {
+            for (const auto& pr : g_presets) {
+                f << pr.name << "|" << pr.x << "|" << pr.y << "|" << pr.w << "|" << pr.h;
+                if (pr.baseW > 0 && pr.baseH > 0) f << "|" << pr.baseW << "|" << pr.baseH;
+                f << "\n";
+            }
+            f.close();
+        }
+        LoadPresetsFromFile();
+    }
+}
 string OpenFileDialog(HWND h) { char f[MAX_PATH] = ""; OPENFILENAMEA o = { 0 }; o.lStructSize = sizeof(o); o.hwndOwner = h; o.lpstrFilter = "Video\0*.mp4;*.mkv\0"; o.lpstrFile = f; o.nMaxFile = MAX_PATH; GetOpenFileNameA(&o); return string(f); }
 string SelectFolderDialog(HWND h) { char p[MAX_PATH]; BROWSEINFOA b = { 0 }; b.hwndOwner = h; LPITEMIDLIST l = SHBrowseForFolderA(&b); if (l) { SHGetPathFromIDListA(l, p); return string(p); } return ""; }
 
@@ -538,6 +743,61 @@ atomic<bool> lcIsExporting(false);
 string lcExportStatus = "";
 const int LC_TIMELINE_H = 80;
 const int LC_SIDE_W = 250;
+
+string GetSettingsFilePath() {
+    return (fs::path(GetExeDir()) / "settings.ini").string();
+}
+
+void LoadSettings() {
+    string ini = GetSettingsFilePath();
+    if (!fs::exists(ini)) return;
+
+    char outBuf[MAX_PATH] = { 0 };
+    GetPrivateProfileStringA("Settings", "OutputPath", "", outBuf, MAX_PATH, ini.c_str());
+    if (strlen(outBuf) > 0) {
+        SetWindowTextA(hEditOutput, outBuf);
+        lcUserFolder = string(outBuf);
+    }
+
+    char preBuf[32] = { 0 };
+    GetPrivateProfileStringA("Settings", "PreRoll", "8", preBuf, 32, ini.c_str());
+    if (strlen(preBuf) > 0) {
+        SetWindowTextA(hEditPre, preBuf);
+    }
+
+    char postBuf[32] = { 0 };
+    GetPrivateProfileStringA("Settings", "PostRoll", "8", postBuf, 32, ini.c_str());
+    if (strlen(postBuf) > 0) {
+        SetWindowTextA(hEditPost, postBuf);
+    }
+
+    char nameBuf[128] = { 0 };
+    GetPrivateProfileStringA("Settings", "PlayerName", "", nameBuf, 128, ini.c_str());
+    if (strlen(nameBuf) > 0 && string(nameBuf) != PLAYER_PLACEHOLDER) {
+        SetWindowTextA(hEditName, nameBuf);
+    }
+}
+
+void SaveSettings() {
+    string ini = GetSettingsFilePath();
+    char outBuf[MAX_PATH] = { 0 };
+    GetWindowTextA(hEditOutput, outBuf, MAX_PATH);
+    WritePrivateProfileStringA("Settings", "OutputPath", outBuf, ini.c_str());
+
+    char preBuf[32] = { 0 };
+    GetWindowTextA(hEditPre, preBuf, 32);
+    WritePrivateProfileStringA("Settings", "PreRoll", preBuf, ini.c_str());
+
+    char postBuf[32] = { 0 };
+    GetWindowTextA(hEditPost, postBuf, 32);
+    WritePrivateProfileStringA("Settings", "PostRoll", postBuf, ini.c_str());
+
+    char nameBuf[128] = { 0 };
+    GetWindowTextA(hEditName, nameBuf, 128);
+    if (string(nameBuf) != PLAYER_PLACEHOLDER) {
+        WritePrivateProfileStringA("Settings", "PlayerName", nameBuf, ini.c_str());
+    }
+}
 
 // Utils
 string ToDotString(double val) { stringstream ss; ss.imbue(locale("C")); ss << fixed << setprecision(3) << val; return ss.str(); }
@@ -720,9 +980,32 @@ LRESULT CALLBACK AutoCutProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     case WM_COMMAND:
         // Handle Tombol Auto Cut (Sama seperti sebelumnya)
         if (LOWORD(wParam) == ID_BTN_FILE) { string f = OpenFileDialog(hwnd); if (!f.empty()) SetWindowTextA(hEditFile, f.c_str()); }
-        else if (LOWORD(wParam) == ID_BTN_OUTPUT) { string f = SelectFolderDialog(hwnd); if (!f.empty()) SetWindowTextA(hEditOutput, f.c_str()); }
+        else if (LOWORD(wParam) == ID_BTN_OUTPUT) {
+            string f = SelectFolderDialog(hwnd);
+            if (!f.empty()) {
+                SetWindowTextA(hEditOutput, f.c_str());
+                lcUserFolder = f;
+                SaveSettings();
+            }
+        }
         else if (LOWORD(wParam) == ID_BTN_ROI) { char f[MAX_PATH]; GetWindowTextA(hEditFile, f, MAX_PATH); if (strlen(f) > 0) OpenRoiSelector(f); else MessageBoxA(hwnd, "Pilih video!", "Info", MB_OK); }
-        else if (LOWORD(wParam) == ID_BTN_SAVE_PRESET) { char n[100]; GetWindowTextA(hEditPresetName, n, 100); if (strlen(n) > 0 && g_roiSet) SavePresetToFile(n, g_roiRect); }
+        else if (LOWORD(wParam) == ID_BTN_SAVE_PRESET) {
+            char n[100]; GetWindowTextA(hEditPresetName, n, 100);
+            if (strlen(n) > 0 && g_roiSet) {
+                int bw = 0, bh = 0;
+                char vid[MAX_PATH] = { 0 };
+                GetWindowTextA(hEditFile, vid, MAX_PATH);
+                if (strlen(vid) > 0 && fs::exists(vid)) {
+                    VideoCapture cap(vid);
+                    if (cap.isOpened()) {
+                        bw = (int)cap.get(CAP_PROP_FRAME_WIDTH);
+                        bh = (int)cap.get(CAP_PROP_FRAME_HEIGHT);
+                        cap.release();
+                    }
+                }
+                SavePresetToFile(n, g_roiRect, bw, bh);
+            }
+        }
         else if (LOWORD(wParam) == ID_BTN_DEL_PRESET) DeleteCurrentPreset();
         else if (LOWORD(wParam) == ID_COMBO_PRESET && HIWORD(wParam) == CBN_SELCHANGE) { int i = (int)SendMessageA(hComboPreset, CB_GETCURSEL, 0, 0); if (i >= 0 && i < g_presets.size()) { g_roiRect = Rect(g_presets[i].x, g_presets[i].y, g_presets[i].w, g_presets[i].h); g_roiSet = true; LogToUI("Preset Loaded: " + g_presets[i].name); } }
         else if (LOWORD(wParam) == ID_BTN_START) {
@@ -731,7 +1014,10 @@ LRESULT CALLBACK AutoCutProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                 GetWindowTextA(hEditFile, f, MAX_PATH); GetWindowTextA(hEditOutput, o, MAX_PATH); GetWindowTextA(hEditName, n, 100);
                 GetWindowTextA(hEditPre, pre, 20); GetWindowTextA(hEditPost, post, 20);
                 if (strlen(f) == 0 || string(n) == PLAYER_PLACEHOLDER) MessageBoxA(hwnd, "Input belum lengkap!", "Error", MB_ICONERROR);
-                else { double pr = atof(pre); double po = atof(post); EnableWindow(hBtnStart, FALSE); stopRequested = false; thread(WorkerThread, string(f), string(o), string(n), pr, po).detach(); }
+                else {
+                    SaveSettings();
+                    double pr = atof(pre); double po = atof(post); EnableWindow(hBtnStart, FALSE); stopRequested = false; thread(WorkerThread, string(f), string(o), string(n), pr, po).detach();
+                }
             }
         }
         else if (LOWORD(wParam) == ID_BTN_CANCEL) { if (isRunning) stopRequested = true; }
@@ -784,7 +1070,15 @@ LRESULT CALLBACK LossCutProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     }
     case WM_COMMAND: {
         int id = LOWORD(wParam);
-        if (id == ID_LC_BTN_FOLDER) { string f = SelectFolderDialog(hwnd); if (!f.empty()) { lcUserFolder = f; MessageBoxA(hwnd, ("Folder diset ke:\n" + f).c_str(), "Info", MB_OK); } }
+        if (id == ID_LC_BTN_FOLDER) {
+            string f = SelectFolderDialog(hwnd);
+            if (!f.empty()) {
+                lcUserFolder = f;
+                SetWindowTextA(hEditOutput, f.c_str());
+                SaveSettings();
+                MessageBoxA(hwnd, ("Folder diset ke:\n" + f).c_str(), "Info", MB_OK);
+            }
+        }
         else if (id == ID_LC_BTN_EXPORT) {
             if (lcIsExporting) MessageBox(hwnd, "Tunggu...", "Busy", MB_OK);
             else if (lcCurrentFile.empty()) MessageBox(hwnd, "Load video dulu!", "Error", MB_ICONERROR);
@@ -879,7 +1173,7 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
         WNDCLASSA wc1 = { 0 }; wc1.lpfnWndProc = AutoCutProc; wc1.hInstance = hInst; wc1.lpszClassName = "PanelAutoCut"; wc1.hbrBackground = CreateSolidBrush(COL_BG_MAIN); wc1.hCursor = LoadCursor(NULL, IDC_ARROW); RegisterClassA(&wc1);
         hViewAutoCut = CreateWindowExA(0, "PanelAutoCut", NULL, WS_CHILD | WS_CLIPCHILDREN, 0, 0, 1030, 720, hContentArea, NULL, hInst, NULL);
-        CreateUI_AutoCut(hViewAutoCut); LoadPresetsFromFile();
+        CreateUI_AutoCut(hViewAutoCut); LoadPresetsFromFile(); LoadSettings();
 
         WNDCLASSA wc2 = { 0 }; wc2.lpfnWndProc = LossCutProc; wc2.hInstance = hInst; wc2.lpszClassName = "PanelLossCut"; wc2.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH); wc2.hCursor = LoadCursor(NULL, IDC_ARROW); RegisterClassA(&wc2);
         hViewLossCut = CreateWindowExA(0, "PanelLossCut", NULL, WS_CHILD | WS_CLIPCHILDREN, 0, 0, 1030, 720, hContentArea, NULL, hInst, NULL);
@@ -938,7 +1232,7 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             RECT txtR = r; txtR.left += 20; char b[128]; GetWindowTextA(pD->hwndItem, b, 128); DrawTextA(hdc, b, -1, &txtR, DT_LEFT | DT_VCENTER | DT_SINGLELINE); return TRUE;
         } break;
     }
-    case WM_DESTROY: if (mpv) mpv_terminate_destroy(mpv); if (hOcrEngine) OcrDestroy(hOcrEngine); PostQuitMessage(0); return 0;
+    case WM_DESTROY: SaveSettings(); if (mpv) mpv_terminate_destroy(mpv); if (hOcrEngine) OcrDestroy(hOcrEngine); PostQuitMessage(0); return 0;
     }
     return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
