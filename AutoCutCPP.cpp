@@ -1,4 +1,4 @@
-﻿/*
+/*
  * COMBINED APP: AUTO CUT PRO V48 (FINAL POLISH)
  * * NAVIGATION:
  * 1. DASHBOARD (Auto Cut UI)
@@ -414,13 +414,20 @@ void WorkerThread(string vidPath, string outDir, string targetName, double preSe
             }
             if (!outDir.empty() && fs::exists(outDir)) {
                 try {
-                    fs::path targetVid = fs::path(outDir) / fs::path(vidPath).filename();
-                    fs::path targetCsv = fs::path(outDir) / csvPath.filename();
-                    LogToUI("[PROCESS] Memindahkan file...");
-                    fs::copy(vidPath, targetVid, fs::copy_options::overwrite_existing);
-                    fs::copy(csvPath, targetCsv, fs::copy_options::overwrite_existing);
-                    fs::remove(vidPath); fs::remove(csvPath);
-                    LogToUI("[DONE] File dipindahkan!");
+                    std::error_code ecIn, ecOut;
+                    fs::path normIn = fs::canonical(fs::path(vidPath).parent_path(), ecIn);
+                    fs::path normOut = fs::canonical(outDir, ecOut);
+                    if (!ecIn && !ecOut && normIn == normOut) {
+                        LogToUI("[INFO] File video dan folder output sama, tidak perlu dipindahkan.");
+                    } else {
+                        fs::path targetVid = fs::path(outDir) / fs::path(vidPath).filename();
+                        fs::path targetCsv = fs::path(outDir) / csvPath.filename();
+                        LogToUI("[PROCESS] Memindahkan file...");
+                        fs::copy(vidPath, targetVid, fs::copy_options::overwrite_existing);
+                        fs::copy(csvPath, targetCsv, fs::copy_options::overwrite_existing);
+                        fs::remove(vidPath); fs::remove(csvPath);
+                        LogToUI("[DONE] File dipindahkan!");
+                    }
                 }
                 catch (...) { LogToUI("[WARNING] Gagal pindah file."); }
             }
