@@ -234,6 +234,12 @@ LRESULT CALLBACK WebHost::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lP
         case WM_SIZE:
             self->OnResize();
             return 0;
+        case WM_GETMINMAXINFO: {
+            LPMINMAXINFO lpMMI = (LPMINMAXINFO)lParam;
+            lpMMI->ptMinTrackSize.x = 960;
+            lpMMI->ptMinTrackSize.y = 600;
+            return 0;
+        }
         case WM_USER_WEB_POST_JSON: {
             std::string* pJson = (std::string*)lParam;
             if (pJson) {
