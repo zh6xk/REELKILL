@@ -2,7 +2,7 @@
   <img src="logo.png" width="220" alt="REELKILL Logo" />
 </p>
 
-# REELKILL v1.5
+# REELKILL v1.4
 
 **REELKILL** adalah aplikasi desktop berbasis C++ Native yang dirancang untuk mengotomatisasi proses *highlighting* video game PUBG Mobile. Aplikasi ini menggunakan kecerdasan buatan (OCR) untuk mendeteksi momen penting (seperti Kill Feed) dan memotong klip secara otomatis tanpa mengurangi kualitas video.
 
