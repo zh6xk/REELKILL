@@ -19,8 +19,11 @@ const Bridge=(()=>{
     else if(t==='pickFile'||t==='pickFolder')emit('fileSelected',{target:p.target,path:t==='pickFile'?'D:\\Rekaman\\Match_Final_2.mp4':'E:\\Videos\\OCR'});
     else if(t==='loadResults')emit('resultsLoaded',{videoUrl:'',duration:8845,clips:[[34,41],[52,61],[150,173],[213,230],[406,416],[666,678],[690,700]].map(([start,end])=>({start,end,label:'kill',score:.9}))});
     else if(t==='exportClips')emit('toast',{message:'Mock: '+p.clips.length+' klip diekspor'});
+    else if(t==='saveRoiPreset')emit('toast',{message:'Mock: Preset '+p.name+' disimpan'});
+    else if(t==='deleteRoiPreset')emit('toast',{message:'Mock: Preset '+p.name+' dihapus'});
   }
   return{send(type,payload={}){const m={v:1,type,payload};real?real.postMessage(m):mock(type,payload)},
+    emit,
     on(f){real?real.addEventListener('message',e=>f(e.data)):subs.push(f)}};
 })();
 
@@ -78,7 +81,7 @@ function drawRoi(){const r=S.roi,f=S.frame,b=$('#roiBox');
 $('#btnRoi').onclick=()=>{roiBackup={...S.roi};drawRoi();dlg.showModal()};
 $('#btnCancel').onclick=()=>{S.roi=roiBackup;dlg.close()};
 $('#btnApply').onclick=()=>dlg.close();
-$('#btnRoiDel').onclick=()=>Bridge.send('deleteRoiPreset',{name:$('#roiSelect').value});
+$('#btnRoiDel').onclick=()=>{const name=$('#roiSelect').value;if(!name||name==='default')return;Bridge.send('deleteRoiPreset',{name});const opt=$('#roiSelect').querySelector('option[value="'+name+'"]');if(opt)opt.remove();};
 $('#btnPreset').onclick=()=>{const n=$('#presetName').value.trim();if(!n)return;Bridge.send('saveRoiPreset',{name:n,roi:{...S.roi}});
   $('#roiSelect').append(new Option(n));$('#roiSelect').value=n};
 ['x','y','w','h'].forEach(k=>$('#roi'+k.toUpperCase()).onchange=e=>{S.roi[k]=+e.target.value||0;drawRoi()});
@@ -99,7 +102,9 @@ Bridge.on(m=>{const p=m.payload||{};switch(m.type){
   case'clipFound':addRecent(p);addLog('['+fmt(p.start)+'] kill terdeteksi');break;
   case'scanDone':S.scanning=false;$('#btnStart').disabled=false;$('#btnStop').disabled=true;setStatus(p.stopped?'Dihentikan':'Selesai');break;
   case'fileSelected':{const el=$(p.target==='video'?'#inVideo':'#inOutput');if(el)el.value=p.path;break;}
-  case'frameInfo':S.frame={w:p.width,h:p.height};break;
+  case'frameInfo':S.frame={w:p.width,h:p.height};
+    if(p.previewUrl){const s=$('#roiStage');s.style.backgroundImage='url('+p.previewUrl+')';s.style.backgroundSize='contain';s.style.backgroundRepeat='no-repeat';s.style.backgroundPosition='center';}
+    break;
   case'resultsLoaded':S.clips=p.clips;S.picked=new Set(S.clips.keys());S.duration=p.duration;
     if(p.videoUrl){
       const pl=$('#player');
