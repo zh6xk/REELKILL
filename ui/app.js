@@ -98,8 +98,9 @@ Bridge.on(m=>{const p=m.payload||{};switch(m.type){
   case'log':addLog(p.line);break;
   case'clipFound':addRecent(p);addLog('['+fmt(p.start)+'] kill terdeteksi');break;
   case'scanDone':S.scanning=false;$('#btnStart').disabled=false;$('#btnStop').disabled=true;setStatus(p.stopped?'Dihentikan':'Selesai');break;
-  case'fileSelected':$(p.target==='video'?'#inVideo':'#inOutput').value=p.path;break;
+  case'fileSelected':{const el=$(p.target==='video'?'#inVideo':'#inOutput');if(el)el.value=p.path;break;}
   case'frameInfo':S.frame={w:p.width,h:p.height};break;
   case'resultsLoaded':S.clips=p.clips;S.picked=new Set(S.clips.keys());S.duration=p.duration;
     if(p.videoUrl)$('#player').src=p.videoUrl;drawClips();drawTimeline();break;
-  case'toast':case'error':setStatus(p.message);break;}});
+  case'toast':setStatus(p.message);break;
+  case'error':S.scanning=false;$('#btnStart').disabled=false;$('#btnStop').disabled=true;setStatus('Error: '+p.message);break;}});
