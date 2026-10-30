@@ -101,6 +101,11 @@ Bridge.on(m=>{const p=m.payload||{};switch(m.type){
   case'fileSelected':{const el=$(p.target==='video'?'#inVideo':'#inOutput');if(el)el.value=p.path;break;}
   case'frameInfo':S.frame={w:p.width,h:p.height};break;
   case'resultsLoaded':S.clips=p.clips;S.picked=new Set(S.clips.keys());S.duration=p.duration;
-    if(p.videoUrl)$('#player').src=p.videoUrl;drawClips();drawTimeline();break;
+    if(p.videoUrl){
+      const pl=$('#player');
+      pl.onerror=()=>{setStatus('Format rekaman video tidak didukung peramban. Periksa codec (HEVC/H.265).');};
+      pl.src=p.videoUrl;
+    }
+    drawClips();drawTimeline();break;
   case'toast':setStatus(p.message);break;
   case'error':S.scanning=false;$('#btnStart').disabled=false;$('#btnStop').disabled=true;setStatus('Error: '+p.message);break;}});
