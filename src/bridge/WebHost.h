@@ -37,6 +37,7 @@ public:
     void SendFileSelected(const std::string& target, const std::string& path);
     void SendToast(const std::string& message);
     void SendError(const std::string& message);
+    void SendFrameInfo(int width, int height, const std::string& previewUrl = "");
     void SendResultsLoaded(const std::string& videoUrl, double duration,
                            const std::vector<ExportClip>& clips);
 
@@ -64,6 +65,9 @@ private:
     void HandleLoadResults();
     void HandleExportClips(const std::string& json);
     void HandleShowInExplorer();
+    void HandleSaveRoiPreset(const std::string& json);
+    void HandleDeleteRoiPreset(const std::string& json);
+    void HandleExtractFrameInfo(const std::string& videoPath);
 
     // Mapping virtual host media.reelkill secara dinamis ke folder video
     void MapMediaFolder(const std::wstring& folderPath);

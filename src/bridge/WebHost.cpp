@@ -437,6 +437,18 @@ void WebHost::SendError(const std::string& message) {
     SendJsonToUI(ss.str());
 }
 
+void WebHost::SendFrameInfo(int width, int height, const std::string& previewUrl) {
+    std::ostringstream ss;
+    ss << "{\"v\":1,\"type\":\"frameInfo\",\"payload\":{"
+       << "\"width\":" << width << ","
+       << "\"height\":" << height;
+    if (!previewUrl.empty()) {
+        ss << ",\"previewUrl\":\"" << EscapeJsonString(previewUrl) << "\"";
+    }
+    ss << "}}";
+    SendJsonToUI(ss.str());
+}
+
 void WebHost::SendResultsLoaded(const std::string& videoUrl, double duration,
                                 const std::vector<ExportClip>& clips) {
     std::ostringstream ss;
@@ -488,6 +500,10 @@ void WebHost::HandleWebMessage(const std::string& json) {
         HandleExportClips(json);
     } else if (type == "showInExplorer") {
         HandleShowInExplorer();
+    } else if (type == "saveRoiPreset") {
+        HandleSaveRoiPreset(json);
+    } else if (type == "deleteRoiPreset") {
+        HandleDeleteRoiPreset(json);
     }
 }
 
@@ -506,7 +522,11 @@ void WebHost::HandlePickFile(const std::string& target) {
         // Map folder video ke media.reelkill
         fs::path p(Utf8ToUtf16(filePath));
         MapMediaFolder(p.parent_path().wstring());
+        m_currentLoadedVideo = filePath;
         SendFileSelected(target, filePath);
+        if (target == "video") {
+            HandleExtractFrameInfo(filePath);
+        }
     }
 }
 
@@ -547,19 +567,21 @@ void WebHost::HandleStartScan(const std::string& video, const std::string& outpu
 
     ScanParams params;
     params.videoPath = video;
-    params.outDir = outDir;
-    params.targetName = player;
+    params.outputDir = outDir;
+    params.playerName = player;
     params.preSec = pre;
     params.postSec = post;
     params.minSimilarity = 0.45;
-    params.roiX = roiX;
-    params.roiY = roiY;
-    params.roiW = roiW;
-    params.roiH = roiH;
-    params.roiPreset = roiPreset;
+    if (roiW > 0 && roiH > 0) {
+        params.roi.x = roiX;
+        params.roi.y = roiY;
+        params.roi.width = roiW;
+        params.roi.height = roiH;
+        params.hasCustomRoi = true;
+    }
 
     ScanCallbacks callbacks;
-    callbacks.onProgress = [this](int percent, int64_t frame, int64_t total, double fps, int etaSec) {
+    callbacks.onProgress = [this](int percent, int frame, int total, double fps, int etaSec) {
         SendProgress(percent, frame, total, fps, etaSec);
     };
 
@@ -773,6 +795,119 @@ void WebHost::HandleShowInExplorer() {
     } else {
         SendError("Folder tujuan belum tersedia.");
     }
+}
+
+void WebHost::HandleExtractFrameInfo(const std::string& videoPath) {
+    if (videoPath.empty() || !fs::exists(Utf8ToUtf16(videoPath))) return;
+
+    try {
+        cv::VideoCapture cap(videoPath);
+        if (cap.isOpened()) {
+            int w = (int)cap.get(cv::CAP_PROP_FRAME_WIDTH);
+            int h = (int)cap.get(cv::CAP_PROP_FRAME_HEIGHT);
+
+            std::string previewUrl = "";
+            cv::Mat frame;
+            // Baca frame pertama atau frame detik ke-1 untuk preview
+            if (cap.read(frame) && !frame.empty()) {
+                // Resize preview jika terlalu besar (maks width 1280)
+                if (frame.cols > 1280) {
+                    double scale = 1280.0 / frame.cols;
+                    cv::resize(frame, frame, cv::Size(), scale, scale);
+                }
+                std::vector<uchar> buf;
+                std::vector<int> params = { cv::IMWRITE_JPEG_QUALITY, 80 };
+                if (cv::imencode(".jpg", frame, buf, params)) {
+                    static const char b64table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+                    std::string b64 = "";
+                    int val = 0, valb = -6;
+                    for (uchar c : buf) {
+                        val = (val << 8) + c;
+                        valb += 8;
+                        while (valb >= 0) {
+                            b64.push_back(b64table[(val >> valb) & 0x3F]);
+                            valb -= 6;
+                        }
+                    }
+                    if (valb > -6) b64.push_back(b64table[((val << 8) >> (valb + 8)) & 0x3F]);
+                    while (b64.size() % 4) b64.push_back('=');
+                    previewUrl = "data:image/jpeg;base64," + b64;
+                }
+            }
+            cap.release();
+            SendFrameInfo(w, h, previewUrl);
+        }
+    } catch (...) {}
+}
+
+void WebHost::HandleSaveRoiPreset(const std::string& json) {
+    std::string name = ExtractJsonString(json, "name");
+    if (name.empty()) return;
+
+    int x = (int)ExtractJsonNumber(json, "x", 0);
+    int y = (int)ExtractJsonNumber(json, "y", 0);
+    int w = (int)ExtractJsonNumber(json, "w", 0);
+    int h = (int)ExtractJsonNumber(json, "h", 0);
+
+    // Baca preset lama dari file JSON
+    std::string exeDir = GetExeDirW();
+    fs::path presetJsonPath = fs::path(exeDir) / "roi_presets.json";
+
+    // Format simpan JSON sederhana
+    std::vector<std::string> entries;
+    if (fs::exists(presetJsonPath)) {
+        std::ifstream f(presetJsonPath);
+        std::string line;
+        while (std::getline(f, line)) {
+            if (line.find("\"name\":\"" + name + "\"") == std::string::npos && line.find('{') != std::string::npos) {
+                entries.push_back(line);
+            }
+        }
+        f.close();
+    }
+
+    std::ostringstream ss;
+    ss << "  {\"name\":\"" << EscapeJsonString(name) << "\",\"x\":" << x << ",\"y\":" << y << ",\"w\":" << w << ",\"h\":" << h << "}";
+    entries.push_back(ss.str());
+
+    std::ofstream out(presetJsonPath);
+    out << "[\n";
+    for (size_t i = 0; i < entries.size(); i++) {
+        out << entries[i] << (i + 1 < entries.size() ? ",\n" : "\n");
+    }
+    out << "]\n";
+    out.close();
+
+    SendToast("Preset ROI '" + name + "' berhasil disimpan.");
+}
+
+void WebHost::HandleDeleteRoiPreset(const std::string& json) {
+    std::string name = ExtractJsonString(json, "name");
+    if (name.empty()) return;
+
+    std::string exeDir = GetExeDirW();
+    fs::path presetJsonPath = fs::path(exeDir) / "roi_presets.json";
+    if (!fs::exists(presetJsonPath)) return;
+
+    std::vector<std::string> entries;
+    std::ifstream f(presetJsonPath);
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.find("\"name\":\"" + name + "\"") == std::string::npos && line.find('{') != std::string::npos) {
+            entries.push_back(line);
+        }
+    }
+    f.close();
+
+    std::ofstream out(presetJsonPath);
+    out << "[\n";
+    for (size_t i = 0; i < entries.size(); i++) {
+        out << entries[i] << (i + 1 < entries.size() ? ",\n" : "\n");
+    }
+    out << "]\n";
+    out.close();
+
+    SendToast("Preset ROI '" + name + "' berhasil dihapus.");
 }
 
 } // namespace ReelKill
