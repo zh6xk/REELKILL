@@ -1296,8 +1296,13 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 int main() {
     CoInitialize(NULL);
     WNDCLASSA wc = { 0 }; wc.lpfnWndProc = MainProc; wc.hInstance = GetModuleHandle(NULL); wc.lpszClassName = "AutoCutAllInOne";
+    HICON hAppIcon = (HICON)LoadImageA(NULL, "app.ico", IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE);
+    if (!hAppIcon) hAppIcon = LoadIcon(NULL, IDI_APPLICATION);
+    wc.hIcon = hAppIcon;
     wc.hbrBackground = CreateSolidBrush(COL_BG_MAIN); wc.hCursor = LoadCursor(NULL, IDC_ARROW); RegisterClassA(&wc);
     hMainFrame = CreateWindowExA(0, "AutoCutAllInOne", "Auto Cut Pro - 1.4", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 760, NULL, NULL, GetModuleHandle(NULL), NULL);
+    SendMessage(hMainFrame, WM_SETICON, ICON_BIG, (LPARAM)hAppIcon);
+    SendMessage(hMainFrame, WM_SETICON, ICON_SMALL, (LPARAM)hAppIcon);
     ShowWindow(hMainFrame, SW_SHOW);
 
     MSG msg = { 0 };
