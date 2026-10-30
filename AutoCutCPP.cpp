@@ -101,6 +101,8 @@ int currentViewID = -1;
 #define ID_EDIT_PRESET    204 
 #define ID_EDIT_PRE       206 
 #define ID_EDIT_POST      207 
+#define ID_SLIDER_THRESH  208
+#define ID_LBL_THRESH_VAL 304
 #define ID_PROGRESS       301
 #define ID_COMBO_PRESET   401 
 #define ID_STATIC_PREVIEW 601 
@@ -136,6 +138,8 @@ HWND hLbl1, hLbl2, hLbl3, hLbl4, hLbl5, hLbl6, hLbl7, hLbl8;
 HWND hEditFile, hEditOutput, hEditName, hEditLog, hProgress, hBtnStart, hBtnCancel;
 HWND hComboPreset, hEditPresetName, hEditPre, hEditPost, hPreviewBox;
 HWND hBtnFile, hBtnOutput, hBtnRoi, hBtnSave, hBtnDel;
+HWND hSliderThresh, hLblThresh, hLblThreshVal;
+int g_similarityThreshold = 50;
 
 // --- UTILS ---
 HFONT CreateSFPro(int size, int weight = FW_NORMAL) {
@@ -275,7 +279,7 @@ void DrawMatToHwnd(HWND hWnd, const cv::Mat& imgSrc) {
     ReleaseDC(hWnd, hdc);
 }
 
-void WorkerThread(string vidPath, string outDir, string targetName, double preSec, double postSec) {
+void WorkerThread(string vidPath, string outDir, string targetName, double preSec, double postSec, double minSimilarity) {
     fs::path tempPath;
     try {
         isRunning = true;
@@ -358,11 +362,18 @@ void WorkerThread(string vidPath, string outDir, string targetName, double preSe
                             vector<char> buf(len + 1); OcrGetResult(hOcrEngine, buf.data(), len + 1);
                             string resRaw = string(buf.data()); string resSafe = NormalizeForMatch(resRaw);
                             double similarity = GetBestSimilarity(resSafe, safeTarget);
-                            if (similarity >= 0.55) {
+                            if (similarity >= minSimilarity) {
                                 double currentTime = processedFrames / fps;
                                 double idealStart = max(0.0, currentTime - preSec); double idealEnd = min((double)totalFrames / fps, currentTime + postSec);
                                 if (!segments.empty() && idealStart <= segments.back().end + 2.0) { segments.back().end = max(segments.back().end, idealEnd); }
-                                else { hitCount++; LogToUI("[HIT #" + to_string(hitCount) + "] Kill Detected at " + FormatTimeSafe((int)currentTime)); segments.push_back({ idealStart, idealEnd, "kill" }); }
+                                else {
+                                    hitCount++;
+                                    LogToUI("[HIT #" + to_string(hitCount) + "] Kill Detected at " + FormatTimeSafe((int)currentTime) + " | Teks: \"" + resRaw + "\" (Skor: " + to_string((int)(similarity * 100)) + "% >= " + to_string((int)(minSimilarity * 100)) + "%)");
+                                    segments.push_back({ idealStart, idealEnd, "kill" });
+                                }
+                            }
+                            else if (similarity >= 0.25) {
+                                LogToUI("[SCAN] Teks: \"" + resRaw + "\" | Skor: " + to_string((int)(similarity * 100)) + "% (< Min " + to_string((int)(minSimilarity * 100)) + "%)");
                             }
                         }
                     }
@@ -449,7 +460,12 @@ void CreateUI_AutoCut(HWND hP) {
     hLbl6 = CreateWindowExA(0, "STATIC", "Pre-Roll:", WS_CHILD | WS_VISIBLE, xBase + 320, y + 3, 80, 20, hP, NULL, hInst, NULL);
     hEditPre = CreateWindowExA(0, "EDIT", "8", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_CENTER | ES_NUMBER, xBase + 400, y, 50, 28, hP, (HMENU)ID_EDIT_PRE, hInst, NULL);
     hLbl7 = CreateWindowExA(0, "STATIC", "Post-Roll:", WS_CHILD | WS_VISIBLE, xBase + 470, y + 3, 80, 20, hP, NULL, hInst, NULL);
-    hEditPost = CreateWindowExA(0, "EDIT", "8", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_CENTER | ES_NUMBER, xBase + 550, y, 50, 28, hP, (HMENU)ID_EDIT_POST, hInst, NULL); y += 55;
+    hEditPost = CreateWindowExA(0, "EDIT", "8", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_CENTER | ES_NUMBER, xBase + 550, y, 50, 28, hP, (HMENU)ID_EDIT_POST, hInst, NULL);
+    hLblThresh = CreateWindowExA(0, "STATIC", "Thresh:", WS_CHILD | WS_VISIBLE, xBase + 610, y + 3, 50, 20, hP, NULL, hInst, NULL);
+    hSliderThresh = CreateWindowExA(0, TRACKBAR_CLASSA, "Trackbar", WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS | TBS_NOTICKS, xBase + 665, y, 90, 28, hP, (HMENU)ID_SLIDER_THRESH, hInst, NULL);
+    SendMessage(hSliderThresh, TBM_SETRANGE, TRUE, MAKELPARAM(20, 95));
+    SendMessage(hSliderThresh, TBM_SETPOS, TRUE, 50);
+    hLblThreshVal = CreateWindowExA(0, "STATIC", "50%", WS_CHILD | WS_VISIBLE | SS_CENTER, xBase + 760, y + 3, 40, 20, hP, (HMENU)ID_LBL_THRESH_VAL, hInst, NULL); y += 55;
 
     hLbl8 = CreateWindowExA(0, "STATIC", "AREA DETECTION (ROI)", WS_CHILD | WS_VISIBLE, xBase, y, 300, 25, hP, NULL, hInst, NULL); SendMessage(hLbl8, WM_SETFONT, (WPARAM)hH, TRUE); y += 40;
     hComboPreset = CreateWindowExA(0, "COMBOBOX", "", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, xBase, y, 320, 150, hP, (HMENU)ID_COMBO_PRESET, hInst, NULL);
@@ -470,7 +486,7 @@ void CreateUI_AutoCut(HWND hP) {
     hBtnStart = CreateWindowExA(0, "BUTTON", "MULAI ANALISIS", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, xBase, y, 400, 55, hP, (HMENU)ID_BTN_START, hInst, NULL);
     hBtnCancel = CreateWindowExA(0, "BUTTON", "STOP", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, xBase + 420, y, 190, 55, hP, (HMENU)ID_BTN_CANCEL, hInst, NULL);
 
-    for (int id : {ID_EDIT_FILE, ID_EDIT_OUTPUT, ID_EDIT_NAME, ID_EDIT_PRE, ID_EDIT_POST, ID_EDIT_PRESET, ID_COMBO_PRESET, ID_LBL_PERCENT, ID_LBL_ETA})
+    for (int id : {ID_EDIT_FILE, ID_EDIT_OUTPUT, ID_EDIT_NAME, ID_EDIT_PRE, ID_EDIT_POST, ID_EDIT_PRESET, ID_COMBO_PRESET, ID_LBL_PERCENT, ID_LBL_ETA, ID_LBL_THRESH_VAL})
         SendMessage(GetDlgItem(hP, id), WM_SETFONT, (WPARAM)hL, TRUE);
     SendMessage(hEditLog, WM_SETFONT, (WPARAM)hM, TRUE);
 }
@@ -501,29 +517,36 @@ void AutoCutResize(int w, int h) {
     // 2. SECTION CONFIG (Y sekitar 193)
     // Kita panjangkan Input Player Name untuk mengisi ruang
     // Pre-roll & Post-roll kita geser ke agak kanan agar rapi
-    int smallInputW = 50;
-    int lblSmallW = 80;
+    int smallInputW = 45;
+    int lblSmallW = 70;
 
-    // Hitung posisi dari kanan untuk Post-Roll
-    int postX = xBase + fullW - smallInputW;
+    int valW = 40;
+    int sliderW = 95;
+    int lblThreshW = 55;
+    int valX = xBase + fullW - valW;
+    int sliderX = valX - sliderW - 5;
+    int lblThreshX = sliderX - lblThreshW - 5;
+
+    int postX = lblThreshX - smallInputW - 15;
     int lblPostX = postX - lblSmallW;
 
-    // Hitung posisi Pre-Roll (sebelah kiri Post-Roll)
-    int preX = lblPostX - smallInputW - 20;
+    int preX = lblPostX - smallInputW - 15;
     int lblPreX = preX - lblSmallW;
 
-    // Player Name mengisi sisa ruang di kiri
     int nameX = xBase + 100;
-    int nameW = lblPreX - nameX - 20;
-    if (nameW < 150) nameW = 150; // Safety width
+    int nameW = lblPreX - nameX - 15;
+    if (nameW < 120) nameW = 120;
 
     MoveWindow(hEditName, nameX, 193, nameW, 28, TRUE);
-
-    MoveWindow(hLbl6, lblPreX, 196, lblSmallW, 20, TRUE); // Label Pre
-    MoveWindow(hEditPre, preX, 193, smallInputW, 28, TRUE); // Edit Pre
-
-    MoveWindow(hLbl7, lblPostX, 196, lblSmallW, 20, TRUE); // Label Post
-    MoveWindow(hEditPost, postX, 193, smallInputW, 28, TRUE); // Edit Post
+    MoveWindow(hLbl6, lblPreX, 196, lblSmallW, 20, TRUE);
+    MoveWindow(hEditPre, preX, 193, smallInputW, 28, TRUE);
+    MoveWindow(hLbl7, lblPostX, 196, lblSmallW, 20, TRUE);
+    MoveWindow(hEditPost, postX, 193, smallInputW, 28, TRUE);
+    if (hSliderThresh) {
+        MoveWindow(hLblThresh, lblThreshX, 196, lblThreshW, 20, TRUE);
+        MoveWindow(hSliderThresh, sliderX, 193, sliderW, 28, TRUE);
+        MoveWindow(hLblThreshVal, valX, 196, valW, 20, TRUE);
+    }
 
     // 3. SECTION ROI (Y sekitar 280)
     // Kolom kiri (Combo/Button) tetap, Preview Box memanjang ke kanan
@@ -776,6 +799,17 @@ void LoadSettings() {
     if (strlen(nameBuf) > 0 && string(nameBuf) != PLAYER_PLACEHOLDER) {
         SetWindowTextA(hEditName, nameBuf);
     }
+
+    char thBuf[32] = { 0 };
+    GetPrivateProfileStringA("Settings", "Threshold", "50", thBuf, 32, ini.c_str());
+    if (strlen(thBuf) > 0) {
+        int th = atoi(thBuf);
+        if (th >= 20 && th <= 95) {
+            g_similarityThreshold = th;
+            if (hSliderThresh) SendMessage(hSliderThresh, TBM_SETPOS, TRUE, th);
+            if (hLblThreshVal) SetWindowTextA(hLblThreshVal, (to_string(th) + "%").c_str());
+        }
+    }
 }
 
 void SaveSettings() {
@@ -797,6 +831,8 @@ void SaveSettings() {
     if (string(nameBuf) != PLAYER_PLACEHOLDER) {
         WritePrivateProfileStringA("Settings", "PlayerName", nameBuf, ini.c_str());
     }
+
+    WritePrivateProfileStringA("Settings", "Threshold", to_string(g_similarityThreshold).c_str(), ini.c_str());
 }
 
 // Utils
@@ -1016,7 +1052,10 @@ LRESULT CALLBACK AutoCutProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                 if (strlen(f) == 0 || string(n) == PLAYER_PLACEHOLDER) MessageBoxA(hwnd, "Input belum lengkap!", "Error", MB_ICONERROR);
                 else {
                     SaveSettings();
-                    double pr = atof(pre); double po = atof(post); EnableWindow(hBtnStart, FALSE); stopRequested = false; thread(WorkerThread, string(f), string(o), string(n), pr, po).detach();
+                    double pr = atof(pre); double po = atof(post);
+                    double threshVal = (double)g_similarityThreshold / 100.0;
+                    EnableWindow(hBtnStart, FALSE); stopRequested = false;
+                    thread(WorkerThread, string(f), string(o), string(n), pr, po, threshVal).detach();
                 }
             }
         }
@@ -1026,6 +1065,16 @@ LRESULT CALLBACK AutoCutProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         if (HIWORD(wParam) == EN_SETFOCUS && LOWORD(wParam) == ID_EDIT_NAME) { char cur[100]; GetWindowTextA(hEditName, cur, 100); if (string(cur) == PLAYER_PLACEHOLDER) SetWindowTextA(hEditName, ""); }
         else if (HIWORD(wParam) == EN_KILLFOCUS && LOWORD(wParam) == ID_EDIT_NAME) { char cur[100]; GetWindowTextA(hEditName, cur, 100); if (strlen(cur) == 0) SetWindowTextA(hEditName, PLAYER_PLACEHOLDER.c_str()); }
         break;
+
+    case WM_HSCROLL: {
+        if ((HWND)lParam == hSliderThresh) {
+            int pos = (int)SendMessage(hSliderThresh, TBM_GETPOS, 0, 0);
+            g_similarityThreshold = pos;
+            string s = to_string(pos) + "%";
+            SetWindowTextA(hLblThreshVal, s.c_str());
+        }
+        break;
+    }
 
     case WM_CTLCOLORSTATIC: {
         HDC hdc = (HDC)wParam; HWND hCtl = (HWND)lParam;
