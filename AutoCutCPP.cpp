@@ -336,7 +336,7 @@ void WorkerThread(string vidPath, string outDir, string targetName, double preSe
         LogToUI("[START] Analisis dimulai...");
 
         double checkInterval = 0.35; int frameStep = (int)(fps * checkInterval); if (frameStep < 1) frameStep = 1;
-        vector<CutSegment> segments; Mat frame, crop, processedCrop;
+        vector<CutSegment> segments; Mat frame, crop, processedCrop, grayCrop, prevGrayCrop, diffMat;
         int processedFrames = 0; int hitCount = 0;
         auto startTime = high_resolution_clock::now(); double avgTimePerStep = 0.0;
 
@@ -351,38 +351,52 @@ void WorkerThread(string vidPath, string outDir, string targetName, double preSe
             if (activeRoi.y + activeRoi.height > frame.rows) activeRoi.height = frame.rows - activeRoi.y;
 
             crop = frame(activeRoi); if (!crop.empty()) {
-                // Upscale 2x bicubic for small text clarity, preserve natural color contrast for RapidOcr
-                resize(crop, processedCrop, Size(), 2.0, 2.0, INTER_CUBIC);
-                DrawMatToHwnd(hPreviewBox, processedCrop);
+                // Motion / Pixel-change filter: Skip heavy OCR if ROI scene has not changed
+                cvtColor(crop, grayCrop, COLOR_BGR2GRAY);
+                bool sceneChanged = true;
+                if (!prevGrayCrop.empty() && prevGrayCrop.size() == grayCrop.size()) {
+                    absdiff(grayCrop, prevGrayCrop, diffMat);
+                    double meanDiff = mean(diffMat)[0];
+                    if (meanDiff < 3.5) {
+                        sceneChanged = false; // ROI static, kill feed hasn't updated
+                    }
+                }
+                grayCrop.copyTo(prevGrayCrop);
 
-                if (imwrite(fullPath, processedCrop)) {
-                    if (OcrDetect(hOcrEngine, fullPath.c_str(), "", &param)) {
-                        int len = OcrGetLen(hOcrEngine);
-                        if (len > 0) {
-                            vector<char> buf(len + 1); OcrGetResult(hOcrEngine, buf.data(), len + 1);
-                            string resRaw = string(buf.data()); string resSafe = NormalizeForMatch(resRaw);
-                            double similarity = GetBestSimilarity(resSafe, safeTarget);
-                            if (similarity >= minSimilarity) {
-                                double currentTime = processedFrames / fps;
-                                double idealStart = max(0.0, currentTime - preSec); double idealEnd = min((double)totalFrames / fps, currentTime + postSec);
-                                if (!segments.empty() && idealStart <= segments.back().end + 2.0) { segments.back().end = max(segments.back().end, idealEnd); }
-                                else {
-                                    hitCount++;
-                                    LogToUI("[HIT #" + to_string(hitCount) + "] Kill Detected at " + FormatTimeSafe((int)currentTime) + " | Teks: \"" + resRaw + "\" (Skor: " + to_string((int)(similarity * 100)) + "% >= " + to_string((int)(minSimilarity * 100)) + "%)");
-                                    segments.push_back({ idealStart, idealEnd, "kill" });
+                if (sceneChanged) {
+                    // Upscale 2x bicubic for small text clarity, preserve natural color contrast for RapidOcr
+                    resize(crop, processedCrop, Size(), 2.0, 2.0, INTER_CUBIC);
+                    DrawMatToHwnd(hPreviewBox, processedCrop);
+
+                    if (imwrite(fullPath, processedCrop)) {
+                        if (OcrDetect(hOcrEngine, fullPath.c_str(), "", &param)) {
+                            int len = OcrGetLen(hOcrEngine);
+                            if (len > 0) {
+                                vector<char> buf(len + 1); OcrGetResult(hOcrEngine, buf.data(), len + 1);
+                                string resRaw = string(buf.data()); string resSafe = NormalizeForMatch(resRaw);
+                                double similarity = GetBestSimilarity(resSafe, safeTarget);
+                                if (similarity >= minSimilarity) {
+                                    double currentTime = processedFrames / fps;
+                                    double idealStart = max(0.0, currentTime - preSec); double idealEnd = min((double)totalFrames / fps, currentTime + postSec);
+                                    if (!segments.empty() && idealStart <= segments.back().end + 2.0) { segments.back().end = max(segments.back().end, idealEnd); }
+                                    else {
+                                        hitCount++;
+                                        LogToUI("[HIT #" + to_string(hitCount) + "] Kill Detected at " + FormatTimeSafe((int)currentTime) + " | Teks: \"" + resRaw + "\" (Skor: " + to_string((int)(similarity * 100)) + "% >= " + to_string((int)(minSimilarity * 100)) + "%)");
+                                        segments.push_back({ idealStart, idealEnd, "kill" });
+                                    }
                                 }
-                            }
-                            else if (similarity >= 0.25) {
-                                LogToUI("[SCAN] Teks: \"" + resRaw + "\" | Skor: " + to_string((int)(similarity * 100)) + "% (< Min " + to_string((int)(minSimilarity * 100)) + "%)");
+                                else if (similarity >= 0.25) {
+                                    LogToUI("[SCAN] Teks: \"" + resRaw + "\" | Skor: " + to_string((int)(similarity * 100)) + "% (< Min " + to_string((int)(minSimilarity * 100)) + "%)");
+                                }
                             }
                         }
                     }
-                }
-                else {
-                    static bool s_warned = false;
-                    if (!s_warned) {
-                        LogToUI("[WARN] Gagal menulis temp image ke: " + fullPath);
-                        s_warned = true;
+                    else {
+                        static bool s_warned = false;
+                        if (!s_warned) {
+                            LogToUI("[WARN] Gagal menulis temp image ke: " + fullPath);
+                            s_warned = true;
+                        }
                     }
                 }
             }

@@ -12,8 +12,8 @@ Dibuat untuk performa maksimal dengan penggunaan resource yang minim.
 
 ## Fitur Utama
 
-### 1. Deteksi Otomatis Berbasis AI
-Menggunakan **PaddleOCR** untuk membaca teks dalam video secara akurat. Dilengkapi dengan algoritma pencocokan cerdas (*Fuzzy Matching*) sehingga nama player tetap terdeteksi meski hasil scan tidak 100% sempurna. Dilengkapi juga dengan pengaturan slider threshold sensitivitas deteksi.
+- **Motion / Pixel Difference Filter**: Filter perubahan pixel ROI sebelum memanggil PaddleOCR. Mengabaikan frame statis sehingga kecepatan scanning video meningkat drastis (hingga 10x - 20x lebih cepat).
+- **OCR Frame Analysis**: Deteksi nama pemain pada kill feed video rekaman secara otomatis.
 
 ### 2. Editor "LossCut" yang Interaktif
 Fitur player bawaan yang memungkinkan Anda meninjau hasil scan.
