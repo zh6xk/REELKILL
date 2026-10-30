@@ -43,6 +43,10 @@
 #include <opencv2/imgproc.hpp>
 #include <mpv/client.h> // Header MPV
 
+#include "src/core/Scanner.h"
+#include "src/core/Exporter.h"
+#include "src/bridge/WebHost.h"
+
 using namespace std;
 using namespace cv;
 using namespace std::chrono;
@@ -279,187 +283,56 @@ void DrawMatToHwnd(HWND hWnd, const cv::Mat& imgSrc) {
     ReleaseDC(hWnd, hdc);
 }
 
+#define WM_USER_SCAN_LOG      (WM_USER + 101)
+#define WM_USER_SCAN_PROGRESS (WM_USER + 102)
+#define WM_USER_SCAN_DONE     (WM_USER + 103)
+#define WM_USER_SCAN_PREVIEW  (WM_USER + 104)
+
+static ReelKill::Scanner g_scannerEngine;
+static ReelKill::Exporter g_exporterEngine;
+
 void WorkerThread(string vidPath, string outDir, string targetName, double preSec, double postSec, double minSimilarity) {
-    fs::path tempPath;
-    try {
-        isRunning = true;
-        fs::path exeDir(GetExeDir()); fs::path modelsDir = exeDir / "models";
-        string det = (modelsDir / "ch_PP-OCRv4_det_infer.onnx").string();
-        string cls = (modelsDir / "ch_ppocr_mobile_v2.0_cls_infer.onnx").string();
-        string rec = (modelsDir / "ch_PP-OCRv3_rec_infer.onnx").string();
-        string keys = (modelsDir / "ppocr_keys_v1.txt").string();
-        replace(det.begin(), det.end(), '\\', '/'); replace(cls.begin(), cls.end(), '\\', '/');
-        replace(rec.begin(), rec.end(), '\\', '/'); replace(keys.begin(), keys.end(), '\\', '/');
+    isRunning = true;
 
-        if (!fs::exists(det)) { LogToUI("[FATAL] OCR Models missing!"); isRunning = false; EnableWindow(hBtnStart, TRUE); return; }
-        int maxThreads = std::thread::hardware_concurrency(); if (maxThreads < 2)maxThreads = 4;
-        if (hOcrEngine == NULL) hOcrEngine = OcrInit(det.c_str(), cls.c_str(), rec.c_str(), keys.c_str(), maxThreads);
+    ReelKill::ScanParams params;
+    params.videoPath = vidPath;
+    params.outputDir = outDir;
+    params.playerName = targetName;
+    params.preSec = preSec;
+    params.postSec = postSec;
+    params.minSimilarity = minSimilarity;
 
-        VideoCapture cap(vidPath);
-        if (!cap.isOpened()) { LogToUI("[ERROR] Gagal baca video."); isRunning = false; EnableWindow(hBtnStart, TRUE); return; }
-
-        int totalFrames = (int)cap.get(CAP_PROP_FRAME_COUNT);
-        double fps = cap.get(CAP_PROP_FPS); if (fps <= 0) fps = 30.0;
-        int vW = (int)cap.get(CAP_PROP_FRAME_WIDTH); int vH = (int)cap.get(CAP_PROP_FRAME_HEIGHT);
-        Rect activeRoi = g_roiRect;
-        int curSel = (int)SendMessageA(hComboPreset, CB_GETCURSEL, 0, 0);
-        if (curSel >= 0 && curSel < (int)g_presets.size()) {
-            const auto& pr = g_presets[curSel];
-            if (pr.baseW > 0 && pr.baseH > 0 && (pr.baseW != vW || pr.baseH != vH)) {
-                double sx = (double)vW / pr.baseW;
-                double sy = (double)vH / pr.baseH;
-                activeRoi.x = (int)(pr.x * sx);
-                activeRoi.y = (int)(pr.y * sy);
-                activeRoi.width = (int)(pr.w * sx);
-                activeRoi.height = (int)(pr.h * sy);
-                LogToUI("[INFO] Preset di-scale: " + to_string(pr.baseW) + "x" + to_string(pr.baseH) + " -> " + to_string(vW) + "x" + to_string(vH));
-            }
-        }
-        if (!g_roiSet || activeRoi.width <= 0 || activeRoi.height <= 0) {
-            activeRoi = Rect((int)(vW * 0.64), (int)(vH * 0.39), (int)(vW * 0.15), (int)(vH * 0.13));
-        }
-        if (activeRoi.x < 0) activeRoi.x = 0;
-        if (activeRoi.y < 0) activeRoi.y = 0;
-        if (activeRoi.x + activeRoi.width > vW) activeRoi.width = vW - activeRoi.x;
-        if (activeRoi.y + activeRoi.height > vH) activeRoi.height = vH - activeRoi.y;
-
-        // Optimized OCR_PARAM: doAngle=0, mostAngle=0 (Skip angle classifier for horizontal kill feed text)
-        OCR_PARAM param = { 50, 1024, 0.5f, 0.3f, 1.6f, 0, 0 };
-        std::error_code ecTemp;
-        fs::path tempDir = fs::temp_directory_path(ecTemp);
-        if (ecTemp || !fs::exists(tempDir)) {
-            tempDir = exeDir;
-        }
-        tempPath = tempDir / ("reelkill_temp_" + to_string(GetCurrentProcessId()) + ".bmp");
-        string fullPath = tempPath.string();
-        replace(fullPath.begin(), fullPath.end(), '\\', '/');
-        string safeTarget = NormalizeForMatch(targetName);
-        LogToUI("[START] Analisis dimulai...");
-
-        double checkInterval = 0.35; int frameStep = (int)(fps * checkInterval); if (frameStep < 1) frameStep = 1;
-        vector<CutSegment> segments; Mat frame, crop, processedCrop, grayCrop, prevGrayCrop, diffMat;
-        int processedFrames = 0; int hitCount = 0;
-        auto startTime = high_resolution_clock::now(); double avgTimePerStep = 0.0;
-
-        while (processedFrames < totalFrames) {
-            if (stopRequested) break;
-            auto stepStart = high_resolution_clock::now();
-            bool ok = cap.read(frame); if (!ok) break;
-            for (int k = 0; k < frameStep - 1; k++) { cap.grab(); processedFrames++; }
-            processedFrames++;
-
-            if (activeRoi.x + activeRoi.width > frame.cols) activeRoi.width = frame.cols - activeRoi.x;
-            if (activeRoi.y + activeRoi.height > frame.rows) activeRoi.height = frame.rows - activeRoi.y;
-
-            crop = frame(activeRoi); if (!crop.empty()) {
-                // Motion / Pixel-change filter: Skip heavy OCR if ROI scene has not changed
-                cvtColor(crop, grayCrop, COLOR_BGR2GRAY);
-                bool sceneChanged = true;
-                if (!prevGrayCrop.empty() && prevGrayCrop.size() == grayCrop.size()) {
-                    absdiff(grayCrop, prevGrayCrop, diffMat);
-                    double meanDiff = mean(diffMat)[0];
-                    if (meanDiff < 3.5) {
-                        sceneChanged = false; // ROI static, kill feed hasn't updated
-                    }
-                }
-                grayCrop.copyTo(prevGrayCrop);
-
-                if (sceneChanged) {
-                    // Upscale 2x bicubic for small text clarity, preserve natural color contrast for RapidOcr
-                    resize(crop, processedCrop, Size(), 2.0, 2.0, INTER_CUBIC);
-                    DrawMatToHwnd(hPreviewBox, processedCrop);
-
-                    if (imwrite(fullPath, processedCrop)) {
-                        if (OcrDetect(hOcrEngine, fullPath.c_str(), "", &param)) {
-                            int len = OcrGetLen(hOcrEngine);
-                            if (len > 0) {
-                                vector<char> buf(len + 1); OcrGetResult(hOcrEngine, buf.data(), len + 1);
-                                string resRaw = string(buf.data()); string resSafe = NormalizeForMatch(resRaw);
-                                double similarity = GetBestSimilarity(resSafe, safeTarget);
-                                if (similarity >= minSimilarity) {
-                                    double currentTime = processedFrames / fps;
-                                    double idealStart = max(0.0, currentTime - preSec); double idealEnd = min((double)totalFrames / fps, currentTime + postSec);
-                                    if (!segments.empty() && idealStart <= segments.back().end + 2.0) { segments.back().end = max(segments.back().end, idealEnd); }
-                                    else {
-                                        hitCount++;
-                                        LogToUI("[HIT #" + to_string(hitCount) + "] Kill Detected at " + FormatTimeSafe((int)currentTime) + " | Teks: \"" + resRaw + "\" (Skor: " + to_string((int)(similarity * 100)) + "% >= " + to_string((int)(minSimilarity * 100)) + "%)");
-                                        segments.push_back({ idealStart, idealEnd, "kill" });
-                                    }
-                                }
-                                else if (similarity >= 0.25) {
-                                    LogToUI("[SCAN] Teks: \"" + resRaw + "\" | Skor: " + to_string((int)(similarity * 100)) + "% (< Min " + to_string((int)(minSimilarity * 100)) + "%)");
-                                }
-                            }
-                        }
-                    }
-                    else {
-                        static bool s_warned = false;
-                        if (!s_warned) {
-                            LogToUI("[WARN] Gagal menulis temp image ke: " + fullPath);
-                            s_warned = true;
-                        }
-                    }
-                }
-            }
-
-            auto stepEnd = high_resolution_clock::now(); duration<double> stepDur = stepEnd - stepStart;
-            if (avgTimePerStep == 0) avgTimePerStep = stepDur.count(); else avgTimePerStep = (avgTimePerStep * 0.9) + (stepDur.count() * 0.1);
-
-            if (processedFrames % (frameStep * 2) == 0 || processedFrames >= totalFrames) {
-                int percent = (int)((float)processedFrames / totalFrames * 100);
-                int framesLeft = totalFrames - processedFrames;
-                double secondsLeft = (framesLeft / frameStep) * avgTimePerStep;
-                SendMessage(hProgress, PBM_SETPOS, percent, 0);
-                string pctStr = to_string(percent) + "%";
-                string etaStr = "Estimasi: " + FormatTimeSafe((int)secondsLeft);
-                SetWindowTextA(hLblPercent, pctStr.c_str());
-                SetWindowTextA(hLblEta, etaStr.c_str());
-            }
-        }
-        cap.release();
-        std::error_code ecRem;
-        if (!tempPath.empty()) fs::remove(tempPath, ecRem);
-
-        if (!segments.empty()) {
-            fs::path csvPath = fs::path(vidPath).replace_extension(".csv");
-            ofstream csv(csvPath);
-            if (csv.is_open()) {
-                for (const auto& seg : segments) csv << seg.start << "," << seg.end << ",\"" << seg.label << "\"" << endl;
-                csv.close(); LogToUI("[SUCCESS] CSV Dibuat!");
-            }
-            if (!outDir.empty() && fs::exists(outDir)) {
-                try {
-                    std::error_code ecIn, ecOut;
-                    fs::path normIn = fs::canonical(fs::path(vidPath).parent_path(), ecIn);
-                    fs::path normOut = fs::canonical(outDir, ecOut);
-                    if (!ecIn && !ecOut && normIn == normOut) {
-                        LogToUI("[INFO] File video dan folder output sama, tidak perlu dipindahkan.");
-                    } else {
-                        fs::path targetVid = fs::path(outDir) / fs::path(vidPath).filename();
-                        fs::path targetCsv = fs::path(outDir) / csvPath.filename();
-                        LogToUI("[PROCESS] Memindahkan file...");
-                        fs::copy(vidPath, targetVid, fs::copy_options::overwrite_existing);
-                        fs::copy(csvPath, targetCsv, fs::copy_options::overwrite_existing);
-                        fs::remove(vidPath); fs::remove(csvPath);
-                        LogToUI("[DONE] File dipindahkan!");
-                    }
-                }
-                catch (...) { LogToUI("[WARNING] Gagal pindah file."); }
-            }
-        }
-        else { LogToUI("[INFO] Tidak ada momen."); }
-
-        SetWindowTextA(hLblPercent, "100%");
-        SetWindowTextA(hLblEta, "Selesai");
-        LogToUI("=== SELESAI ===");
-        MessageBeep(MB_OK);
+    if (g_roiSet && g_roiRect.width > 0 && g_roiRect.height > 0) {
+        params.roi.x = g_roiRect.x;
+        params.roi.y = g_roiRect.y;
+        params.roi.width = g_roiRect.width;
+        params.roi.height = g_roiRect.height;
+        params.hasCustomRoi = true;
     }
-    catch (...) {
-        std::error_code ecRem;
-        if (!tempPath.empty()) fs::remove(tempPath, ecRem);
-        LogToUI("[ERROR] Terjadi exception saat analisis video.");
-    }
-    isRunning = false; EnableWindow(hBtnStart, TRUE);
+
+    ReelKill::ScanCallbacks callbacks;
+    callbacks.onLog = [](const string& line) {
+        string* pMsg = new string(line);
+        if (hMainFrame) PostMessage(hMainFrame, WM_USER_SCAN_LOG, 0, (LPARAM)pMsg);
+    };
+    callbacks.onPreviewMat = [](const void* matBgr) {
+        if (matBgr && hMainFrame) {
+            Mat* pClone = new Mat(((const Mat*)matBgr)->clone());
+            PostMessage(hMainFrame, WM_USER_SCAN_PREVIEW, 0, (LPARAM)pClone);
+        }
+    };
+    callbacks.onProgress = [](int percent, int frame, int total, double fps, int etaSec) {
+        if (hMainFrame) PostMessage(hMainFrame, WM_USER_SCAN_PROGRESS, (WPARAM)percent, (LPARAM)etaSec);
+    };
+    callbacks.onError = [](const string& err) {
+        string* pErr = new string("[ERROR] " + err);
+        if (hMainFrame) PostMessage(hMainFrame, WM_USER_SCAN_LOG, 0, (LPARAM)pErr);
+    };
+    callbacks.onDone = [](bool stopped, const vector<ReelKill::FoundClip>& clips) {
+        if (hMainFrame) PostMessage(hMainFrame, WM_USER_SCAN_DONE, (WPARAM)(stopped ? 1 : 0), 0);
+    };
+
+    g_scannerEngine.Start(params, callbacks);
 }
 
 void CreateUI_AutoCut(HWND hP) {
@@ -865,19 +738,22 @@ double ParseTime(string str) { double result = 0.0; if (str.find(':') != string:
 
 void RunExportThread(string inputPath, string outputPath, double startSec, double endSec) {
     lcIsExporting = true; lcExportStatus = "Mencari FFmpeg...";
-    string exeDir = GetExeDir(); string ffmpegPath = exeDir + "\\ffmpeg.exe";
-    ifstream f(ffmpegPath.c_str());
-    if (!f.good()) { MessageBoxA(NULL, "ffmpeg.exe missing!", "Error", MB_ICONERROR); lcIsExporting = false; return; }
-    f.close(); lcExportStatus = "Encoding...";
-    double duration = endSec - startSec; if (duration < 0.1) duration = 0.1;
-    stringstream args; args << "\"" << ffmpegPath << "\" -y -ss " << ToDotString(startSec) << " -i \"" << inputPath << "\" -t " << ToDotString(duration) << " -c copy -avoid_negative_ts 1 \"" << outputPath << "\"";
-    string cmdStr = args.str(); vector<char> cmdBuffer(cmdStr.begin(), cmdStr.end()); cmdBuffer.push_back(0);
-    STARTUPINFOA si; PROCESS_INFORMATION pi; ZeroMemory(&si, sizeof(si)); si.cb = sizeof(si); si.dwFlags = STARTF_USESHOWWINDOW; si.wShowWindow = SW_HIDE; ZeroMemory(&pi, sizeof(pi));
-    if (CreateProcessA(NULL, &cmdBuffer[0], NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
-        WaitForSingleObject(pi.hProcess, INFINITE); CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
-        lcIsExporting = false; lcExportStatus = "Selesai!"; MessageBeep(MB_OK);
+    string exeDir = GetExeDir();
+    string ffmpegPath;
+    if (!ReelKill::Exporter::CheckFfmpeg(exeDir, ffmpegPath)) {
+        MessageBoxA(NULL, "ffmpeg.exe missing!", "Error", MB_ICONERROR);
+        lcIsExporting = false;
+        return;
     }
-    else { lcIsExporting = false; lcExportStatus = "Gagal Start"; }
+    lcExportStatus = "Encoding...";
+    bool ok = g_exporterEngine.ExportSingle(inputPath, outputPath, startSec, endSec);
+    lcIsExporting = false;
+    if (ok) {
+        lcExportStatus = "Selesai!";
+        MessageBeep(MB_OK);
+    } else {
+        lcExportStatus = "Gagal Start";
+    }
 }
 
 void LcInitMPV(HWND hVideoTarget) {
@@ -1081,7 +957,12 @@ LRESULT CALLBACK AutoCutProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                 }
             }
         }
-        else if (LOWORD(wParam) == ID_BTN_CANCEL) { if (isRunning) stopRequested = true; }
+        else if (LOWORD(wParam) == ID_BTN_CANCEL) {
+            if (isRunning) {
+                stopRequested = true;
+                g_scannerEngine.Stop();
+            }
+        }
 
         // Placeholder Logic
         if (HIWORD(wParam) == EN_SETFOCUS && LOWORD(wParam) == ID_EDIT_NAME) { char cur[100]; GetWindowTextA(hEditName, cur, 100); if (string(cur) == PLAYER_PLACEHOLDER) SetWindowTextA(hEditName, ""); }
@@ -1222,6 +1103,41 @@ LRESULT CALLBACK LossCutProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 
 LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
+    case WM_USER_SCAN_LOG: {
+        string* pMsg = (string*)lParam;
+        if (pMsg) {
+            LogToUI(*pMsg);
+            delete pMsg;
+        }
+        return 0;
+    }
+    case WM_USER_SCAN_PREVIEW: {
+        Mat* pMat = (Mat*)lParam;
+        if (pMat) {
+            if (hPreviewBox) DrawMatToHwnd(hPreviewBox, *pMat);
+            delete pMat;
+        }
+        return 0;
+    }
+    case WM_USER_SCAN_PROGRESS: {
+        int percent = (int)wParam;
+        int etaSec = (int)lParam;
+        SendMessage(hProgress, PBM_SETPOS, percent, 0);
+        string pctStr = to_string(percent) + "%";
+        string etaStr = "Estimasi: " + FormatTimeSafe(etaSec);
+        SetWindowTextA(hLblPercent, pctStr.c_str());
+        SetWindowTextA(hLblEta, etaStr.c_str());
+        return 0;
+    }
+    case WM_USER_SCAN_DONE: {
+        bool stopped = (wParam == 1);
+        SetWindowTextA(hLblPercent, "100%");
+        SetWindowTextA(hLblEta, stopped ? "Dihentikan" : "Selesai");
+        MessageBeep(MB_OK);
+        isRunning = false;
+        EnableWindow(hBtnStart, TRUE);
+        return 0;
+    }
     case WM_CREATE: {
         hInst = ((LPCREATESTRUCT)lParam)->hInstance;
 
@@ -1303,22 +1219,28 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             RECT txtR = r; txtR.left += 20; char b[128]; GetWindowTextA(pD->hwndItem, b, 128); DrawTextA(hdc, b, -1, &txtR, DT_LEFT | DT_VCENTER | DT_SINGLELINE); return TRUE;
         } break;
     }
-    case WM_DESTROY: SaveSettings(); if (mpv) mpv_terminate_destroy(mpv); if (hOcrEngine) OcrDestroy(hOcrEngine); PostQuitMessage(0); return 0;
+    case WM_DESTROY:
+        SaveSettings();
+        g_scannerEngine.Stop();
+        g_exporterEngine.Cancel();
+        if (mpv) mpv_terminate_destroy(mpv);
+        if (hOcrEngine) OcrDestroy(hOcrEngine);
+        PostQuitMessage(0);
+        return 0;
     }
     return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
 
-int main() {
-    CoInitialize(NULL);
-    WNDCLASSA wc = { 0 }; wc.lpfnWndProc = MainProc; wc.hInstance = GetModuleHandle(NULL); wc.lpszClassName = "ReelKillMainWindow";
+int RunLegacyUI(HINSTANCE hInstance, int nCmdShow) {
+    WNDCLASSA wc = { 0 }; wc.lpfnWndProc = MainProc; wc.hInstance = hInstance ? hInstance : GetModuleHandle(NULL); wc.lpszClassName = "ReelKillMainWindow";
     HICON hAppIcon = (HICON)LoadImageA(NULL, "app.ico", IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE);
     if (!hAppIcon) hAppIcon = LoadIcon(NULL, IDI_APPLICATION);
     wc.hIcon = hAppIcon;
     wc.hbrBackground = CreateSolidBrush(COL_BG_MAIN); wc.hCursor = LoadCursor(NULL, IDC_ARROW); RegisterClassA(&wc);
-    hMainFrame = CreateWindowExA(0, "ReelKillMainWindow", "REELKILL - 1.5", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 760, NULL, NULL, GetModuleHandle(NULL), NULL);
+    hMainFrame = CreateWindowExA(0, "ReelKillMainWindow", "REELKILL - 1.4", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 760, NULL, NULL, GetModuleHandle(NULL), NULL);
     SendMessage(hMainFrame, WM_SETICON, ICON_BIG, (LPARAM)hAppIcon);
     SendMessage(hMainFrame, WM_SETICON, ICON_SMALL, (LPARAM)hAppIcon);
-    ShowWindow(hMainFrame, SW_SHOW);
+    ShowWindow(hMainFrame, nCmdShow);
 
     MSG msg = { 0 };
     while (msg.message != WM_QUIT) {
@@ -1339,5 +1261,36 @@ int main() {
             MsgWaitForMultipleObjects(0, NULL, FALSE, 10, QS_ALLINPUT);
         }
     }
-    CoUninitialize(); return 0;
+    return 0;
+}
+
+int main(int argc, char* argv[]) {
+    CoInitialize(NULL);
+
+    bool useLegacyUI = false;
+    for (int i = 1; i < argc; i++) {
+        if (string(argv[i]) == "--legacy-ui") {
+            useLegacyUI = true;
+            break;
+        }
+    }
+
+    if (useLegacyUI) {
+        int res = RunLegacyUI(GetModuleHandle(NULL), SW_SHOW);
+        CoUninitialize();
+        return res;
+    }
+
+    // Default: Host WebView2 UI
+    ReelKill::WebHost host;
+    if (!host.Initialize(GetModuleHandle(NULL), SW_SHOW, 1280, 760)) {
+        // Fallback ke legacy UI jika WebView2 gagal init
+        int res = RunLegacyUI(GetModuleHandle(NULL), SW_SHOW);
+        CoUninitialize();
+        return res;
+    }
+
+    int res = host.RunMessageLoop();
+    CoUninitialize();
+    return res;
 }

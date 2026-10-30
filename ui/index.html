@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>REELKILL</title><link rel="stylesheet" href="styles.css"></head><body>
+<div class="app">
+<aside class="sb"><img class="logo" src="assets/logo.jpg" alt="REELKILL"><div class="vr">v1.4</div>
+<nav id="nav"><button class="nv on" data-view="dashboard">DASHBOARD</button><button class="nv" data-view="results">HASIL SCAN</button><button class="nv" data-view="guide">PANDUAN</button><button class="nv" data-view="about">TENTANG</button></nav>
+<div class="status" id="status" role="status">Ready</div></aside>
+<main>
+<section class="view on" id="view-dashboard">
+<div><h2>Dashboard</h2><div class="mt">Scan kill feed dari rekaman, lalu ekspor klip tanpa render ulang.</div></div>
+<div class="row" style="align-items:stretch">
+<div class="card col grow" style="flex:1.3"><b>Source &amp; Output</b>
+<div class="row"><input class="in" id="inVideo" aria-label="File video" placeholder="File video" readonly><button class="btn sec" id="btnVideo">...</button></div>
+<div class="row"><input class="in" id="inOutput" aria-label="Folder output" placeholder="Folder output" readonly><button class="btn sec" id="btnOut">...</button></div></div>
+<div class="card col grow"><b>Konfigurasi</b><input class="in" id="inPlayer" aria-label="Nama player" placeholder="Masukkan nama player...">
+<div class="row"><input class="in" id="inPre" type="number" min="0" value="4" aria-label="Pre (detik)"><input class="in" id="inPost" type="number" min="0" value="3" aria-label="Post (detik)"></div></div>
+<div class="card col grow"><b>Area Detection (ROI)</b><select class="in" id="roiSelect" aria-label="Preset ROI"><option>iPad</option></select>
+<div class="row"><button class="btn sec grow" id="btnRoi">Set Area</button><button class="btn kill" id="btnRoiDel">Hapus</button></div></div></div>
+<div class="card col"><div class="row"><b class="grow">Menganalisis</b><b id="pct" style="color:var(--cy)">0%</b></div><div class="bar"><div class="fill" id="bar"></div></div><div class="mt" id="meta">Belum ada proses</div></div>
+<div class="row grow" style="align-items:stretch;min-height:0"><div class="card log grow" id="log" style="flex:1.4" aria-live="off"></div>
+<div class="card col grow"><b>Klip terbaru</b><div class="col" id="recent"></div></div></div>
+<div class="row"><button class="btn grow" id="btnStart" style="flex:2">MULAI ANALISIS</button><button class="btn kill grow" id="btnStop" disabled>STOP</button></div>
+</section>
+<section class="view" id="view-results">
+<div class="row"><div class="grow"><h2>Hasil Scan</h2><div class="mt" id="resSum">Belum ada hasil</div></div><button class="btn sec" id="btnLoad">Muat video &amp; CSV</button><button class="btn sec" id="btnAll">Pilih semua</button><button class="btn sec" id="btnNone">Batal semua</button></div>
+<div class="row grow" style="align-items:stretch;min-height:0"><div class="grow"><video class="vid" id="player" controls></video></div><div class="card col" id="clipList" style="width:320px;overflow:auto" role="group" aria-label="Daftar klip"></div></div>
+<div><div class="tl" id="tl" aria-label="Timeline"><div class="ph" id="ph"></div></div><div class="ticks mt" id="ticks"></div></div>
+<div class="row"><div class="mt grow" id="clock">00:00 / 00:00</div><button class="btn" id="btnExport">Export Selected</button><button class="btn sec" id="btnExplorer">Show in Explorer</button></div>
+</section>
+<section class="view" id="view-guide"><div><h2>Panduan</h2><div class="mt">Tiga langkah dari rekaman sampai klip siap pakai.</div></div>
+<div class="card step"><span class="num">1</span><div><b>Dashboard</b><div class="mt">Pilih video, tentukan folder output, isi nama player, lalu klik Mulai Analisis.</div></div></div>
+<div class="card step"><span class="num">2</span><div><b>Area Detection (ROI)</b><div class="mt">Tarik kotak langsung di atas preview agar pas dengan kill feed.</div></div></div>
+<div class="card step"><span class="num">3</span><div><b>Hasil Scan</b><div class="mt">Muat video dan CSV, pilih klip, lalu klik Export Selected.</div></div></div>
+<div class="card" style="border-color:var(--cy)"><b>Tips</b><div class="mt">Letakkan ffmpeg.exe di folder aplikasi sebelum mengekspor.</div></div></section>
+<section class="view" id="view-about"><div><h2 style="font-size:34px;color:var(--cy)">REEL<span class="kl">KILL</span> v1.4</h2><div class="mt">Aplikasi analisis kill feed otomatis untuk PUBG Mobile.</div></div>
+<div class="card"><b>Baru di v1.4</b><div class="mt" style="line-height:2;font-size:14px">Filter selisih piksel, scan hingga 10–20x lebih cepat<br>ROI auto-scaling untuk resolusi berbeda<br>Ekspor multi-klip dengan merge otomatis<br>Antarmuka baru dengan animasi halus</div></div>
+<div class="chips"><span class="chip">C++</span><span class="chip">OpenCV</span><span class="chip">OcrLite</span><span class="chip">libmpv</span><span class="chip">FFmpeg</span><span class="chip">WebView2</span></div></section>
+</main></div>
+<dialog id="roiDlg"><h2>Set Area Deteksi (ROI)</h2><div class="mt">Tarik kotak untuk menggeser, tarik sudut untuk mengubah ukuran.</div>
+<div id="roiStage" style="margin-top:12px"><div id="roiBox"><i data-h="nw"></i><i data-h="ne"></i><i data-h="sw"></i><i data-h="se"></i></div></div>
+<div class="num4"><label class="mt">X<input class="in" id="roiX" type="number"></label><label class="mt">Y<input class="in" id="roiY" type="number"></label><label class="mt">Width<input class="in" id="roiW" type="number"></label><label class="mt">Height<input class="in" id="roiH" type="number"></label></div>
+<div class="row" style="margin-top:14px"><input class="in grow" id="presetName" placeholder="Nama preset..." aria-label="Nama preset"><button class="btn sec" id="btnPreset">Simpan preset</button><button class="btn" id="btnApply">Apply</button><button class="btn sec" id="btnCancel">Cancel</button></div></dialog>
+<script src="app.js"></script></body></html>
