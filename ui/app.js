@@ -33,7 +33,7 @@ const setStatus=t=>{$('#status').textContent=t};
 
 /* ---------- Navigasi ---------- */
 $('#nav').addEventListener('click',e=>{const b=e.target.closest('.nv');if(!b)return;
-  document.querySelectorAll('.nv').forEach(n=>n.classList.toggle('on',n===b));
+  document.querySelectorAll('.nv').forEach(n=>{n.classList.toggle('on',n===b);n.setAttribute('aria-selected',n===b);});
   document.querySelectorAll('.view').forEach(v=>v.classList.toggle('on',v.id==='view-'+b.dataset.view));});
 
 /* ---------- Dashboard ---------- */
@@ -48,8 +48,13 @@ $('#btnStart').onclick=()=>{
 $('#btnStop').onclick=()=>Bridge.send('stopScan');
 function addLog(t){const l=$('#log');l.append(el('div',null,t));if(l.children.length>200)l.firstChild.remove();l.scrollTop=l.scrollHeight}
 function addRecent(c){S.recent.unshift(c);S.recent.length=Math.min(S.recent.length,4);
-  $('#recent').replaceChildren(...S.recent.map(r=>{const d=el('div','row');d.append(el('div','th'));
+  renderRecent();}
+function renderRecent(){
+  const rec=$('#recent');
+  if(!S.recent.length){rec.replaceChildren(el('div','mt','Belum ada klip'));return}
+  rec.replaceChildren(...S.recent.map(r=>{const d=el('div','row');d.append(el('div','th'));
     const t=el('div');t.append(el('div',null,fmt(r.start)+' – '+fmt(r.end)),el('div','mt','kill · '+(r.score??0).toFixed(2)));d.append(t);return d}))}
+renderRecent();
 
 /* ---------- Hasil Scan ---------- */
 $('#btnLoad').onclick=()=>Bridge.send('loadResults');
@@ -59,6 +64,11 @@ $('#btnExport').onclick=()=>{const clips=[...S.picked].sort((a,b)=>a-b).map(i=>(
   if(!clips.length){setStatus('Pilih minimal satu klip');return}Bridge.send('exportClips',{clips})};
 $('#btnExplorer').onclick=()=>Bridge.send('showInExplorer');
 function drawClips(){
+  if(!S.clips.length){
+    $('#clipList').replaceChildren(el('div','mt','Belum ada klip yang dimuat'));
+    $('#resSum').textContent='Belum ada hasil';
+    return;
+  }
   $('#clipList').replaceChildren(...S.clips.map((c,i)=>{const b=el('button','item');b.setAttribute('role','checkbox');
     b.setAttribute('aria-checked',S.picked.has(i));const t=el('div');t.append(el('div',null,fmt(c.start)+' – '+fmt(c.end)),el('span','tag',c.label||'kill'));
     b.append(el('span','ck'),el('div','th'),t);
@@ -66,10 +76,12 @@ function drawClips(){
     b.ondblclick=()=>{$('#player').currentTime=c.start};return b}));
   const tot=[...S.picked].reduce((a,i)=>a+S.clips[i].end-S.clips[i].start,0);
   $('#resSum').textContent=S.clips.length+' klip · '+S.picked.size+' dipilih · total '+fmt(tot);}
+drawClips();
 function drawTimeline(){
   const tl=$('#tl');tl.querySelectorAll('.mk').forEach(m=>m.remove());const d=S.duration||1;
   S.clips.forEach(c=>{const m=el('div','mk');m.style.left=c.start/d*100+'%';m.style.width=Math.max(.15,(c.end-c.start)/d*100)+'%';tl.append(m)});
   $('#ticks').replaceChildren(...[0,1,2,3,4,5].map(i=>el('span',null,fmt(d*i/5))));}
+drawTimeline();
 $('#tl').onclick=e=>{const r=e.currentTarget.getBoundingClientRect();$('#player').currentTime=(e.clientX-r.left)/r.width*S.duration};
 $('#player').ontimeupdate=e=>{const t=e.target.currentTime;$('#ph').style.left=t/(S.duration||1)*100+'%';$('#clock').textContent=fmt(t)+' / '+fmt(S.duration)};
 
