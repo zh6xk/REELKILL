@@ -1,3 +1,6 @@
+#include <fstream>
+#include <functional>
+#include <opencv2/opencv.hpp>
 #include "WebHost.h"
 #include <commctrl.h>
 #include <shlobj.h>
@@ -22,10 +25,11 @@ namespace ReelKill {
 // Light-weight COM Callback Handler Templates (Tanpa butuh WRL / wil)
 // =========================================================================
 
-template <typename TInterface, typename TFunc>
+template <typename TInterface, typename... Args>
 class ComCallback : public TInterface {
 public:
-    ComCallback(TFunc func) : m_func(func), m_refCount(1) {}
+    using Func = std::function<HRESULT(Args...)>;
+    ComCallback(Func func) : m_func(std::move(func)), m_refCount(1) {}
     virtual ~ComCallback() {}
 
     STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override {
@@ -49,13 +53,13 @@ public:
         return ref;
     }
 
-    template <typename... Args>
-    HRESULT STDMETHODCALLTYPE Invoke(Args... args) {
+    // Harus fungsi biasa (bukan template) agar benar-benar meng-override Invoke milik interface COM.
+    HRESULT STDMETHODCALLTYPE Invoke(Args... args) override {
         return m_func(args...);
     }
 
 private:
-    TFunc m_func;
+    Func m_func;
     long m_refCount;
 };
 
@@ -280,7 +284,7 @@ void WebHost::InitWebView2() {
     std::wstring userDataFolder = (p.parent_path() / L"webview2_data").wstring();
 
     auto envHandler = new ComCallback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler,
-        std::function<HRESULT(HRESULT, ICoreWebView2Environment*)>>(
+        HRESULT, ICoreWebView2Environment*>(
             [this](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
                 if (FAILED(result) || !env) {
                     MessageBoxW(m_hWnd, L"Gagal membuat environment WebView2. Pastikan Microsoft Edge WebView2 Runtime terpasang.", L"Error", MB_ICONERROR);
@@ -290,7 +294,7 @@ void WebHost::InitWebView2() {
                 m_env->AddRef();
 
                 auto controllerHandler = new ComCallback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler,
-                    std::function<HRESULT(HRESULT, ICoreWebView2Controller*)>>(
+                    HRESULT, ICoreWebView2Controller*>(
                         [this](HRESULT res, ICoreWebView2Controller* controller) -> HRESULT {
                             if (FAILED(res) || !controller) {
                                 MessageBoxW(m_hWnd, L"Gagal membuat WebView2 controller.", L"Error", MB_ICONERROR);
@@ -345,7 +349,7 @@ void WebHost::OnWebViewReady() {
     // Pasang WebMessageReceived handler
     EventRegistrationToken token;
     auto msgHandler = new ComCallback<ICoreWebView2WebMessageReceivedEventHandler,
-        std::function<HRESULT(ICoreWebView2*, ICoreWebView2WebMessageReceivedEventArgs*)>>(
+        ICoreWebView2*, ICoreWebView2WebMessageReceivedEventArgs*>(
             [this](ICoreWebView2*, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
                 LPWSTR pJson = nullptr;
                 if (SUCCEEDED(args->get_WebMessageAsJson(&pJson)) && pJson) {
