@@ -45,6 +45,7 @@
 
 #include "src/core/Scanner.h"
 #include "src/core/Exporter.h"
+#include "src/bridge/WebHost.h"
 
 using namespace std;
 using namespace cv;
@@ -1144,7 +1145,7 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
             0, 0, 250, 900, hwnd, NULL, hInst, NULL);
 
-        HWND hLogo = CreateWindowExA(0, "STATIC", "REELKILL\nV1.5", WS_CHILD | WS_VISIBLE | SS_CENTER, 0, 40, 250, 60, hwnd, (HMENU)ID_STATIC_LOGO, hInst, NULL);
+        HWND hLogo = CreateWindowExA(0, "STATIC", "REELKILL\nv2.0", WS_CHILD | WS_VISIBLE | SS_CENTER, 0, 40, 250, 60, hwnd, (HMENU)ID_STATIC_LOGO, hInst, NULL);
         SendMessage(hLogo, WM_SETFONT, (WPARAM)CreateSFPro(24, FW_BOLD), TRUE);
 
         int btnY = 140; int btnH = 50;
@@ -1170,7 +1171,7 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         hViewAbout = CreateWindowExA(0, "PanelTextDark", NULL, WS_CHILD, 40, 40, 600, 400, hContentArea, NULL, hInst, NULL);
 
         HWND hTxtG = CreateWindowExA(0, "STATIC", "PANDUAN:\n1. Dashboard: Lakukan Scan kill feed di sini.\n2. Hasil Scan: Load Video & CSV hasil scan untuk export.\n\nJangan lupa set ffmpeg.exe di folder aplikasi.", WS_CHILD | WS_VISIBLE, 0, 0, 600, 400, hViewGuide, NULL, hInst, NULL);
-        HWND hTxtA = CreateWindowExA(0, "STATIC", "REELKILL V1.5\nPUBG Mobile Auto-Cut Analysis.\n\nHighlighting Engine with Fast OCR & Lossless Cut.", WS_CHILD | WS_VISIBLE, 0, 0, 600, 400, hViewAbout, NULL, hInst, NULL);
+        HWND hTxtA = CreateWindowExA(0, "STATIC", "REELKILL v2.0\nPUBG Mobile Auto-Cut Analysis.\n\nHighlighting Engine with Fast OCR & Lossless Cut.", WS_CHILD | WS_VISIBLE, 0, 0, 600, 400, hViewAbout, NULL, hInst, NULL);
         SendMessage(hTxtG, WM_SETFONT, (WPARAM)CreateSFPro(16), TRUE); SendMessage(hTxtA, WM_SETFONT, (WPARAM)CreateSFPro(16), TRUE);
 
         ShowView(0); break;
@@ -1230,17 +1231,16 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
 
-int main() {
-    CoInitialize(NULL);
-    WNDCLASSA wc = { 0 }; wc.lpfnWndProc = MainProc; wc.hInstance = GetModuleHandle(NULL); wc.lpszClassName = "ReelKillMainWindow";
+int RunLegacyUI(HINSTANCE hInstance, int nCmdShow) {
+    WNDCLASSA wc = { 0 }; wc.lpfnWndProc = MainProc; wc.hInstance = hInstance ? hInstance : GetModuleHandle(NULL); wc.lpszClassName = "ReelKillMainWindow";
     HICON hAppIcon = (HICON)LoadImageA(NULL, "app.ico", IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE);
     if (!hAppIcon) hAppIcon = LoadIcon(NULL, IDI_APPLICATION);
     wc.hIcon = hAppIcon;
     wc.hbrBackground = CreateSolidBrush(COL_BG_MAIN); wc.hCursor = LoadCursor(NULL, IDC_ARROW); RegisterClassA(&wc);
-    hMainFrame = CreateWindowExA(0, "ReelKillMainWindow", "REELKILL - 1.5", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 760, NULL, NULL, GetModuleHandle(NULL), NULL);
+    hMainFrame = CreateWindowExA(0, "ReelKillMainWindow", "REELKILL - 1.4", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 760, NULL, NULL, GetModuleHandle(NULL), NULL);
     SendMessage(hMainFrame, WM_SETICON, ICON_BIG, (LPARAM)hAppIcon);
     SendMessage(hMainFrame, WM_SETICON, ICON_SMALL, (LPARAM)hAppIcon);
-    ShowWindow(hMainFrame, SW_SHOW);
+    ShowWindow(hMainFrame, nCmdShow);
 
     MSG msg = { 0 };
     while (msg.message != WM_QUIT) {
@@ -1261,5 +1261,36 @@ int main() {
             MsgWaitForMultipleObjects(0, NULL, FALSE, 10, QS_ALLINPUT);
         }
     }
-    CoUninitialize(); return 0;
+    return 0;
+}
+
+int main(int argc, char* argv[]) {
+    CoInitialize(NULL);
+
+    bool useLegacyUI = false;
+    for (int i = 1; i < argc; i++) {
+        if (string(argv[i]) == "--legacy-ui") {
+            useLegacyUI = true;
+            break;
+        }
+    }
+
+    if (useLegacyUI) {
+        int res = RunLegacyUI(GetModuleHandle(NULL), SW_SHOW);
+        CoUninitialize();
+        return res;
+    }
+
+    // Default: Host WebView2 UI
+    ReelKill::WebHost host;
+    if (!host.Initialize(GetModuleHandle(NULL), SW_SHOW, 1280, 760)) {
+        // Fallback ke legacy UI jika WebView2 gagal init
+        int res = RunLegacyUI(GetModuleHandle(NULL), SW_SHOW);
+        CoUninitialize();
+        return res;
+    }
+
+    int res = host.RunMessageLoop();
+    CoUninitialize();
+    return res;
 }
