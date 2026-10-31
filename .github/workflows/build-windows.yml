@@ -1,0 +1,90 @@
+name: build-windows
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # Harus sama dengan versi OpenCV yang lo pakai di Visual Studio (cek nama opencv_world4xx.lib)
+  OPENCV_VERSION: "4.10.0"
+
+jobs:
+  # Job 1: tanpa dependensi. Membuktikan kode core bisa dikompilasi MSVC asli.
+  core-msvc-check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Compile Exporter.cpp (MSVC)
+        shell: cmd
+        run: cl /nologo /std:c++17 /EHsc /W3 /c src\core\Exporter.cpp /Fo:Exporter.obj
+
+  # Job 2: build penuh. Butuh bundle dependensi (lihat docs/CI_SETUP.md).
+  build-full:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unduh bundle third_party (rapidocr + mpv)
+        id: deps
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download deps-v1 --pattern third_party.zip --dir . 2>$null
+          if (Test-Path third_party.zip) {
+            Expand-Archive third_party.zip -DestinationPath third_party -Force
+            "found=true" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "::warning::Release 'deps-v1' dengan asset third_party.zip belum ada. Build penuh dilewati. Lihat docs/CI_SETUP.md"
+            "found=false" >> $env:GITHUB_OUTPUT
+          }
+          $global:LASTEXITCODE = 0
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: steps.deps.outputs.found == 'true'
+
+      - name: Pasang OpenCV
+        if: steps.deps.outputs.found == 'true'
+        shell: pwsh
+        run: |
+          $v = $env:OPENCV_VERSION
+          Invoke-WebRequest "https://github.com/opencv/opencv/releases/download/$v/opencv-$v-windows.exe" -OutFile opencv.exe
+          .\opencv.exe -oC:\ -y | Out-Null
+          Get-ChildItem C:\opencv\build | Select-Object -First 10
+
+      - name: Pasang WebView2 SDK (NuGet)
+        if: steps.deps.outputs.found == 'true'
+        shell: pwsh
+        run: nuget install Microsoft.Web.WebView2 -OutputDirectory third_party\webview2 -NonInteractive
+
+      - name: Configure
+        if: steps.deps.outputs.found == 'true'
+        shell: pwsh
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DOpenCV_DIR=C:/opencv/build
+
+      - name: Build (Release)
+        if: steps.deps.outputs.found == 'true'
+        shell: pwsh
+        run: |
+          cmake --build build --config Release *> build.log
+          $code = $LASTEXITCODE
+          Get-Content build.log -Tail 150
+          if ($code -ne 0) { exit $code }
+
+      - name: Upload build log
+        if: always() && steps.deps.outputs.found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+
+      - name: Upload hasil build
+        if: steps.deps.outputs.found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: REELKILL-win-x64
+          path: build/Release

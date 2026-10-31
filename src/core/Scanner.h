@@ -21,6 +21,9 @@ struct ScanParams {
     RoiRect roi;
     bool hasCustomRoi = false;
     double minSimilarity = 0.45;
+    // true  : (perilaku lama) salin video+CSV ke outputDir lalu HAPUS file asal.
+    // false : video dan CSV tetap di folder asal; outputDir tidak dipakai scan.
+    bool relocateResults = true;
 };
 
 struct FoundClip {
