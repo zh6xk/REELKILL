@@ -112,19 +112,17 @@ public:
         }
     }
 
+    // Selalu join thread yang masih joinable, juga setelah scan selesai,
+    // supaya destruktor tidak memanggil std::terminate.
     void Stop() {
-        if (isRunning.load()) {
-            stopRequested.store(true);
-            if (workerThread.joinable()) {
-                workerThread.join();
-            }
-            isRunning.store(false);
+        stopRequested.store(true);
+        if (workerThread.joinable()) {
+            workerThread.join();
         }
+        isRunning.store(false);
     }
 
     void Worker(ScanParams params, ScanCallbacks callbacks) {
-        isRunning.store(true);
-        stopRequested.store(false);
         fs::path tempPath;
         vector<FoundClip> foundClips;
         bool stoppedByUser = false;
@@ -324,7 +322,7 @@ public:
                     log("[SUCCESS] CSV Dibuat: " + csvPath.string());
                 }
 
-                if (!params.outputDir.empty() && fs::exists(params.outputDir)) {
+                if (params.relocateResults && !params.outputDir.empty() && fs::exists(params.outputDir)) {
                     try {
                         std::error_code ecIn, ecOut;
                         fs::path normIn = fs::canonical(fs::path(params.videoPath).parent_path(), ecIn);
@@ -370,6 +368,9 @@ Scanner::~Scanner() { delete pImpl; }
 bool Scanner::Start(const ScanParams& params, const ScanCallbacks& callbacks) {
     if (pImpl->isRunning.load()) return false;
     if (pImpl->workerThread.joinable()) pImpl->workerThread.join();
+    // Flag di-set sebelum thread dibuat, supaya Stop() langsung setelah Start() tidak hilang.
+    pImpl->stopRequested.store(false);
+    pImpl->isRunning.store(true);
     pImpl->workerThread = std::thread(&Scanner::Impl::Worker, pImpl, params, callbacks);
     return true;
 }

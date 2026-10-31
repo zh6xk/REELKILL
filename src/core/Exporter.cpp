@@ -1,5 +1,10 @@
 #include "Exporter.h"
 #include <windows.h>
+#include <atomic>
+#include <thread>
+#include <mutex>
+#include <algorithm>
+#include <functional>
 #include <fstream>
 #include <sstream>
 #include <iomanip>
@@ -26,28 +31,79 @@ static string GetModuleDir() {
     return (pos != string::npos) ? s.substr(0, pos) : "";
 }
 
+// Format baris daftar concat ffmpeg: file 'path' (tanda ' di path di-escape sebagai '\'' )
+static string ConcatListLine(const string& path) {
+    string p = path;
+    replace(p.begin(), p.end(), '\\', '/');
+    string out = "file '";
+    for (char c : p) {
+        if (c == '\'') out += "'\\''";
+        else out += c;
+    }
+    out += "'";
+    return out;
+}
+
 class Exporter::Impl {
 public:
     std::atomic<bool> isExporting{false};
     std::atomic<bool> cancelRequested{false};
     std::thread exportThread;
+    std::mutex piMutex;
     PROCESS_INFORMATION activePi{0};
 
     ~Impl() {
         Cancel();
     }
 
+    // Selalu join thread yang masih joinable (juga setelah ekspor selesai),
+    // supaya destruktor tidak memanggil std::terminate.
     void Cancel() {
-        if (isExporting.load()) {
-            cancelRequested.store(true);
+        cancelRequested.store(true);
+        {
+            std::lock_guard<std::mutex> lk(piMutex);
             if (activePi.hProcess) {
                 TerminateProcess(activePi.hProcess, 1);
             }
-            if (exportThread.joinable()) {
-                exportThread.join();
-            }
-            isExporting.store(false);
         }
+        if (exportThread.joinable()) {
+            exportThread.join();
+        }
+        isExporting.store(false);
+    }
+
+    // Jalankan satu proses ffmpeg dan tunggu. Return false jika proses gagal dibuat.
+    bool Run(const string& cmd, DWORD& exitCode) {
+        vector<char> buf(cmd.begin(), cmd.end());
+        buf.push_back(0);
+
+        STARTUPINFOA si;
+        ZeroMemory(&si, sizeof(si));
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+        PROCESS_INFORMATION pi;
+        ZeroMemory(&pi, sizeof(pi));
+
+        if (!CreateProcessA(NULL, &buf[0], NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+            return false;
+        }
+        {
+            std::lock_guard<std::mutex> lk(piMutex);
+            activePi = pi;
+            if (cancelRequested.load()) TerminateProcess(pi.hProcess, 1);
+        }
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        exitCode = 0;
+        GetExitCodeProcess(pi.hProcess, &exitCode);
+        {
+            std::lock_guard<std::mutex> lk(piMutex);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            activePi.hProcess = NULL;
+            activePi.hThread = NULL;
+        }
+        return true;
     }
 };
 
@@ -81,31 +137,11 @@ bool Exporter::ExportSingle(const string& inputVideo, const string& outputClipPa
          << " -i \"" << inputVideo << "\" -t " << ToDotString(duration)
          << " -c copy -avoid_negative_ts 1 \"" << outputClipPath << "\"";
 
-    string cmdStr = args.str();
-    vector<char> cmdBuffer(cmdStr.begin(), cmdStr.end());
-    cmdBuffer.push_back(0);
-
-    STARTUPINFOA si;
-    PROCESS_INFORMATION pi;
-    ZeroMemory(&si, sizeof(si));
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE;
-    ZeroMemory(&pi, sizeof(pi));
-
-    if (CreateProcessA(NULL, &cmdBuffer[0], NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
-        WaitForSingleObject(pi.hProcess, INFINITE);
-        DWORD exitCode = 0;
-        GetExitCodeProcess(pi.hProcess, &exitCode);
-        CloseHandle(pi.hProcess);
-        CloseHandle(pi.hThread);
-        bool ok = (exitCode == 0);
-        if (onDone) onDone(ok);
-        return ok;
-    }
-
-    if (onDone) onDone(false);
-    return false;
+    DWORD exitCode = 1;
+    bool ran = pImpl->Run(args.str(), exitCode);
+    bool ok = ran && exitCode == 0;
+    if (onDone) onDone(ok);
+    return ok;
 }
 
 bool Exporter::ExportBatch(const string& inputVideo, const string& outputFolder,
@@ -132,10 +168,9 @@ bool Exporter::ExportBatch(const string& inputVideo, const string& outputFolder,
         return false;
     }
 
-    pImpl->isExporting.store(true);
-    pImpl->cancelRequested.store(false);
-
     if (pImpl->exportThread.joinable()) pImpl->exportThread.join();
+    pImpl->cancelRequested.store(false);
+    pImpl->isExporting.store(true);
 
     pImpl->exportThread = std::thread([this, inputVideo, outputFolder, clips, mergeToSingleFile, callbacks, ffmpegPath]() {
         int total = (int)clips.size();
@@ -143,6 +178,8 @@ bool Exporter::ExportBatch(const string& inputVideo, const string& outputFolder,
         fs::path inVid(inputVideo);
         string baseName = inVid.stem().string();
         vector<string> exportedClipPaths;
+        bool mergeOk = true;
+        string mergedName;
 
         for (int i = 0; i < total; i++) {
             if (pImpl->cancelRequested.load()) {
@@ -169,78 +206,66 @@ bool Exporter::ExportBatch(const string& inputVideo, const string& outputFolder,
                  << " -i \"" << inputVideo << "\" -t " << ToDotString(duration)
                  << " -c copy -avoid_negative_ts 1 \"" << outPath.string() << "\"";
 
-            string cmdStr = args.str();
-            vector<char> cmdBuffer(cmdStr.begin(), cmdStr.end());
-            cmdBuffer.push_back(0);
-
-            STARTUPINFOA si;
-            ZeroMemory(&si, sizeof(si));
-            si.cb = sizeof(si);
-            si.dwFlags = STARTF_USESHOWWINDOW;
-            si.wShowWindow = SW_HIDE;
-            ZeroMemory(&pImpl->activePi, sizeof(pImpl->activePi));
-
-            if (CreateProcessA(NULL, &cmdBuffer[0], NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pImpl->activePi)) {
-                WaitForSingleObject(pImpl->activePi.hProcess, INFINITE);
-                DWORD exitCode = 0;
-                GetExitCodeProcess(pImpl->activePi.hProcess, &exitCode);
-                CloseHandle(pImpl->activePi.hProcess);
-                CloseHandle(pImpl->activePi.hThread);
-                pImpl->activePi.hProcess = NULL;
-
-                if (exitCode == 0) {
-                    successCount++;
-                    exportedClipPaths.push_back(outPath.string());
+            DWORD exitCode = 1;
+            if (!pImpl->Run(args.str(), exitCode)) {
+                if (callbacks.onError) callbacks.onError("Gagal menjalankan ffmpeg untuk klip #" + to_string(i + 1));
+                continue;
+            }
+            if (exitCode == 0) {
+                successCount++;
+                exportedClipPaths.push_back(outPath.string());
+            } else {
+                // Hapus file parsial (mis. karena dibatalkan atau ffmpeg error)
+                std::error_code ec;
+                fs::remove(outPath, ec);
+                if (!pImpl->cancelRequested.load() && callbacks.onError) {
+                    callbacks.onError("ffmpeg gagal untuk klip #" + to_string(i + 1));
                 }
             }
         }
 
-        // Merge logic if requested (FFmpeg concat demuxer)
+        // Gabungkan semua klip (FFmpeg concat demuxer) bila diminta
         if (mergeToSingleFile && successCount > 1 && !pImpl->cancelRequested.load()) {
             if (callbacks.onLog) callbacks.onLog("[MERGE] Menggabungkan semua klip menjadi satu file...");
+            mergeOk = false;
             fs::path listTxtPath = fs::path(outputFolder) / (baseName + "_concat_list.txt");
             ofstream listFile(listTxtPath);
             if (listFile.is_open()) {
                 for (const auto& cp : exportedClipPaths) {
-                    string esc = cp;
-                    replace(esc.begin(), esc.end(), '\\', '/');
-                    listFile << "file '" << esc << "'" << endl;
+                    listFile << ConcatListLine(cp) << "\n";
                 }
                 listFile.close();
 
-                fs::path mergedPath = fs::path(outputFolder) / (baseName + "_merged" + inVid.extension().string());
+                mergedName = baseName + "_merged" + inVid.extension().string();
+                fs::path mergedPath = fs::path(outputFolder) / mergedName;
                 stringstream concatArgs;
                 concatArgs << "\"" << ffmpegPath << "\" -y -f concat -safe 0 -i \"" << listTxtPath.string()
                            << "\" -c copy \"" << mergedPath.string() << "\"";
 
-                string concatCmd = concatArgs.str();
-                vector<char> concatBuf(concatCmd.begin(), concatCmd.end());
-                concatBuf.push_back(0);
-
-                STARTUPINFOA csi;
-                ZeroMemory(&csi, sizeof(csi));
-                csi.cb = sizeof(csi);
-                csi.dwFlags = STARTF_USESHOWWINDOW;
-                csi.wShowWindow = SW_HIDE;
-                ZeroMemory(&pImpl->activePi, sizeof(pImpl->activePi));
-
-                if (CreateProcessA(NULL, &concatBuf[0], NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &csi, &pImpl->activePi)) {
-                    WaitForSingleObject(pImpl->activePi.hProcess, INFINITE);
-                    CloseHandle(pImpl->activePi.hProcess);
-                    CloseHandle(pImpl->activePi.hThread);
-                    pImpl->activePi.hProcess = NULL;
+                DWORD exitCode = 1;
+                if (pImpl->Run(concatArgs.str(), exitCode) && exitCode == 0) {
+                    mergeOk = true;
+                } else {
+                    std::error_code ec;
+                    fs::remove(mergedPath, ec);
+                    if (callbacks.onError) callbacks.onError("Gagal menggabungkan klip. Klip terpisah tetap tersimpan.");
                 }
-                std::error_code ec;
-                fs::remove(listTxtPath, ec);
+            } else if (callbacks.onError) {
+                callbacks.onError("Gagal membuat daftar concat di folder output.");
             }
+            std::error_code ec;
+            fs::remove(listTxtPath, ec);
         }
 
-        bool fullyDone = (successCount == total && !pImpl->cancelRequested.load());
+        bool cancelled = pImpl->cancelRequested.load();
+        bool fullyDone = (successCount == total && !cancelled && mergeOk);
         pImpl->isExporting.store(false);
 
         if (callbacks.onDone) {
             if (fullyDone) {
-                callbacks.onDone(true, "Berhasil mengekspor " + to_string(successCount) + " klip!");
+                string msg = "Berhasil mengekspor " + to_string(successCount) + " klip!";
+                if (!mergedName.empty()) msg += " Gabungan: " + mergedName;
+                callbacks.onDone(true, msg);
             } else {
                 callbacks.onDone(false, "Selesai dengan " + to_string(successCount) + "/" + to_string(total) + " klip berhasil.");
             }

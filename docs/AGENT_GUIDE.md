@@ -38,7 +38,7 @@ Bentuk: `{"v":1,"type":"...","payload":{...}}`
 | `startScan` | `{video,output,player,pre,post,roi:{x,y,w,h},roiPreset}` | mulai OCR scan |
 | `stopScan` | `{}` | hentikan scan |
 | `loadResults` | `{}` | pilih video + CSV hasil scan |
-| `exportClips` | `{clips:[{start,end}]}` (detik) | ekspor lossless (ffmpeg) |
+| `exportClips` | `{clips:[{start,end}], merge?:bool}` (detik; merge default true) | ekspor lossless (ffmpeg) |
 | `showInExplorer` | `{}` | buka folder output |
 | `saveRoiPreset` / `deleteRoiPreset` | `{name,roi}` / `{name}` | kelola preset |
 

@@ -578,6 +578,8 @@ void WebHost::HandleStartScan(const std::string& video, const std::string& outpu
     params.preSec = pre;
     params.postSec = post;
     params.minSimilarity = 0.45;
+    params.relocateResults = false; // jangan pindahkan/hapus video asli; path video tetap valid untuk tab Hasil Scan
+    m_outputFolder = outDir;
     if (roiW > 0 && roiH > 0) {
         params.roi.x = roiX;
         params.roi.y = roiY;
@@ -595,11 +597,11 @@ void WebHost::HandleStartScan(const std::string& video, const std::string& outpu
         SendLog(line);
     };
 
-    callbacks.onClip = [this](double start, double end, const std::string& label, double score) {
-        SendClipFound(start, end, score);
+    callbacks.onClip = [this](const FoundClip& clip) {
+        SendClipFound(clip.start, clip.end, clip.score);
     };
 
-    callbacks.onDone = [this](bool stopped) {
+    callbacks.onDone = [this](bool stopped, const std::vector<FoundClip>&) {
         SendScanDone(stopped);
     };
 
@@ -719,6 +721,19 @@ void WebHost::HandleLoadResults() {
     SendToast("Berhasil memuat " + std::to_string(clips.size()) + " klip dari CSV");
 }
 
+static bool ExtractJsonBool(const std::string& json, const std::string& key, bool defaultVal) {
+    std::string pattern = "\"" + key + "\"";
+    size_t pos = json.find(pattern);
+    if (pos == std::string::npos) return defaultVal;
+    pos = json.find(':', pos + pattern.length());
+    if (pos == std::string::npos) return defaultVal;
+    pos++;
+    while (pos < json.length() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
+    if (json.compare(pos, 4, "true") == 0) return true;
+    if (json.compare(pos, 5, "false") == 0) return false;
+    return defaultVal;
+}
+
 void WebHost::HandleExportClips(const std::string& json) {
     if (m_currentLoadedVideo.empty() || !fs::exists(Utf8ToUtf16(m_currentLoadedVideo))) {
         SendError("Belum ada video yang dimuat untuk diekspor!");
@@ -761,7 +776,9 @@ void WebHost::HandleExportClips(const std::string& json) {
 
     fs::path vp(Utf8ToUtf16(m_currentLoadedVideo));
     std::string outFolder = Utf16ToUtf8(vp.parent_path().wstring());
+    if (!m_outputFolder.empty() && fs::exists(Utf8ToUtf16(m_outputFolder))) outFolder = m_outputFolder;
     m_lastExportPath = outFolder;
+    bool mergeClips = ExtractJsonBool(json, "merge", true);
 
     SendToast("Memulai ekspor " + std::to_string(clips.size()) + " klip...");
 
@@ -783,10 +800,10 @@ void WebHost::HandleExportClips(const std::string& json) {
         }
     };
 
-    // Jalankan ekspor batch (lossless merge) di background thread
-    std::thread([this, clips, outFolder, cb]() {
-        m_exporter.ExportBatch(m_currentLoadedVideo, outFolder, clips, true, cb);
-    }).detach();
+    // ExportBatch sudah berjalan async di thread miliknya sendiri (tanpa detach)
+    if (!m_exporter.ExportBatch(m_currentLoadedVideo, outFolder, clips, mergeClips, cb)) {
+        SendError("Ekspor sedang berjalan atau tidak bisa dimulai.");
+    }
 }
 
 void WebHost::HandleShowInExplorer() {

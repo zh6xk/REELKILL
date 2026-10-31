@@ -83,6 +83,7 @@ private:
     std::wstring m_currentMediaFolder;
     std::string m_currentLoadedVideo;
     std::string m_lastExportPath;
+    std::string m_outputFolder;
 
     // Backend Core Engine
     Scanner m_scanner;
