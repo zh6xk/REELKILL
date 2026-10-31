@@ -20,6 +20,31 @@ jobs:
         shell: cmd
         run: cl /nologo /std:c++17 /EHsc /W3 /c src\core\Exporter.cpp /Fo:Exporter.obj
 
+  # Job 1b: kompilasi (tanpa link) Scanner.cpp dan WebHost.cpp. Hanya butuh header OpenCV,
+  # jadi tidak perlu third_party.zip. Menangkap error tipe/signature seperti kasus WebHost.
+  compile-sources:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Pasang OpenCV (header dipakai)
+        shell: pwsh
+        run: |
+          $v = $env:OPENCV_VERSION
+          Invoke-WebRequest "https://github.com/opencv/opencv/releases/download/$v/opencv-$v-windows.exe" -OutFile opencv.exe
+          .\opencv.exe -oC:\ -y | Out-Null
+          if (!(Test-Path C:\opencv\build\include\opencv2)) { throw "Header OpenCV tidak ditemukan di C:\opencv\build\include" }
+      - name: Compile Scanner.cpp
+        shell: cmd
+        run: |
+          cl /nologo /std:c++17 /EHsc /W3 /D_CRT_SECURE_NO_WARNINGS /I. /Iinclude /IC:\opencv\build\include /c src\core\Scanner.cpp /Fo:Scanner.obj
+          if errorlevel 1 exit /b 1
+      - name: Compile WebHost.cpp
+        shell: cmd
+        run: |
+          cl /nologo /std:c++17 /EHsc /W3 /D_CRT_SECURE_NO_WARNINGS /I. /Iinclude /IC:\opencv\build\include /c src\bridge\WebHost.cpp /Fo:WebHost.obj
+          if errorlevel 1 exit /b 1
+
   # Job 2: build penuh. Butuh bundle dependensi (lihat docs/CI_SETUP.md).
   build-full:
     runs-on: windows-latest
