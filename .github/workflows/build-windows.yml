@@ -117,13 +117,18 @@ jobs:
       - name: Configure
         if: steps.deps.outputs.found == 'true'
         shell: pwsh
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DOpenCV_DIR=C:/opencv/build
+        run: |
+          if (!(Get-Command ninja -ErrorAction SilentlyContinue)) { choco install ninja -y --no-progress | Out-Null }
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=cl -DOPENCV_ROOT=C:/opencv/build *> configure.log
+          $code = $LASTEXITCODE
+          Get-Content configure.log -Tail 80
+          if ($code -ne 0) { exit $code }
 
       - name: Build (Release)
         if: steps.deps.outputs.found == 'true'
         shell: pwsh
         run: |
-          cmake --build build --config Release *> build.log
+          cmake --build build *> build.log
           $code = $LASTEXITCODE
           Get-Content build.log -Tail 150
           if ($code -ne 0) { exit $code }
@@ -133,11 +138,13 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-log
-          path: build.log
+          path: |
+            configure.log
+            build.log
 
       - name: Upload hasil build
         if: steps.deps.outputs.found == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: REELKILL-win-x64
-          path: build/Release
+          path: build/dist

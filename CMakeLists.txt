@@ -5,7 +5,22 @@ project(REELKILL CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(OpenCV REQUIRED)
+# OpenCV: pakai OPENCV_ROOT (folder "build" OpenCV resmi) agar tidak bergantung pada deteksi
+# versi MSVC di OpenCVConfig.cmake (runner baru memakai Visual Studio 18).
+if(DEFINED OPENCV_ROOT)
+  file(GLOB OCV_LIBS "${OPENCV_ROOT}/x64/*/lib/opencv_world*.lib")
+  list(FILTER OCV_LIBS EXCLUDE REGEX "d\\.lib$")
+  file(GLOB OCV_DLLS "${OPENCV_ROOT}/x64/*/bin/opencv_world*.dll")
+  list(FILTER OCV_DLLS EXCLUDE REGEX "d\\.dll$")
+  if(NOT OCV_LIBS)
+    message(FATAL_ERROR "opencv_world*.lib tidak ditemukan di ${OPENCV_ROOT}/x64/*/lib")
+  endif()
+  set(OpenCV_INCLUDE_DIRS "${OPENCV_ROOT}/include")
+  set(OpenCV_LIBS ${OCV_LIBS})
+else()
+  find_package(OpenCV REQUIRED)
+  file(GLOB OCV_DLLS "${OpenCV_DIR}/x64/*/bin/opencv_world*.dll")
+endif()
 
 set(TP "${CMAKE_SOURCE_DIR}/third_party")
 file(GLOB RAPID_LIBS "${TP}/rapidocr/*.lib")
@@ -15,6 +30,8 @@ list(FILTER WV2_LIBS INCLUDE REGEX "/x64/")
 if(NOT RAPID_LIBS OR NOT MPV_LIBS OR NOT WV2_LIBS)
   message(FATAL_ERROR "Library kurang. Butuh third_party/rapidocr/*.lib, third_party/mpv/*.lib (+ include/mpv), dan WebView2Loader.dll.lib. Lihat docs/CI_SETUP.md")
 endif()
+
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/dist")
 
 add_executable(REELKILL
   AutoCutCPP.cpp
@@ -36,9 +53,8 @@ target_link_libraries(REELKILL PRIVATE
 set_target_properties(REELKILL PROPERTIES LINK_FLAGS "/SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup")
 
 # Salin DLL runtime, ui/, models/, app.ico ke folder exe
-file(GLOB RT_DLLS
-  "${OpenCV_DIR}/x64/*/bin/opencv_world*.dll"
-  "${TP}/rapidocr/*.dll" "${TP}/mpv/*.dll")
+file(GLOB RT_DLLS "${TP}/rapidocr/*.dll" "${TP}/mpv/*.dll")
+list(APPEND RT_DLLS ${OCV_DLLS})
 file(GLOB_RECURSE WV2_DLLS "${TP}/webview2/*WebView2Loader.dll")
 list(FILTER WV2_DLLS INCLUDE REGEX "/x64/")
 list(APPEND RT_DLLS ${WV2_DLLS})
