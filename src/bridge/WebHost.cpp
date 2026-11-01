@@ -900,23 +900,28 @@ void WebHost::RenderFrame(const std::string& videoPath, double timeSec) {
 
             std::string previewUrl = "";
             cv::Mat frame;
+            // Baca frame pertama atau frame detik ke-1 untuk preview
             if (cap.read(frame) && !frame.empty()) {
+                // Resize preview jika terlalu besar (maks width 1280)
+                if (frame.cols > 1280) {
+                    double scale = 1280.0 / frame.cols;
+                    cv::resize(frame, frame, cv::Size(), scale, scale);
+                }
                 std::vector<uchar> buf;
                 std::vector<int> params = { cv::IMWRITE_JPEG_QUALITY, 80 };
                 if (cv::imencode(".jpg", frame, buf, params)) {
-                    // Base64 encode
-                    static const char* b64chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-                    std::string b64;
+                    static const char b64table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+                    std::string b64 = "";
                     int val = 0, valb = -6;
                     for (uchar c : buf) {
                         val = (val << 8) + c;
                         valb += 8;
                         while (valb >= 0) {
-                            b64.push_back(b64chars[(val >> valb) & 0x3F]);
+                            b64.push_back(b64table[(val >> valb) & 0x3F]);
                             valb -= 6;
                         }
                     }
-                    if (valb > -6) b64.push_back(b64chars[((val << 8) >> (valb + 8)) & 0x3F]);
+                    if (valb > -6) b64.push_back(b64table[((val << 8) >> (valb + 8)) & 0x3F]);
                     while (b64.size() % 4) b64.push_back('=');
                     previewUrl = "data:image/jpeg;base64," + b64;
                 }
