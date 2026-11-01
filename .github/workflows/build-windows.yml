@@ -86,6 +86,34 @@ jobs:
         shell: pwsh
         run: nuget install Microsoft.Web.WebView2 -OutputDirectory third_party\webview2 -NonInteractive
 
+      - name: Buat import library dari DLL dan siapkan header mpv
+        if: steps.deps.outputs.found == 'true'
+        shell: pwsh
+        run: |
+          function New-ImportLib([string]$dll) {
+            $base = [IO.Path]::GetFileNameWithoutExtension($dll)
+            $dir = Split-Path $dll
+            $lib = Join-Path $dir "$base.lib"
+            if (Test-Path $lib) { return }
+            $names = @()
+            foreach ($line in (dumpbin /exports $dll)) {
+              if ($line -match '^\s+\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]{8}\s+(\S+)') { $names += $Matches[1] }
+            }
+            if ($names.Count -eq 0) { Write-Host "Lewati $dll (tidak ada export bernama)"; return }
+            $def = Join-Path $dir "$base.def"
+            (@("LIBRARY $base", "EXPORTS") + $names) | Set-Content $def -Encoding ascii
+            lib /nologo /machine:x64 /def:$def /out:$lib
+            Write-Host "Import lib dibuat: $lib ($($names.Count) export)"
+          }
+          Get-ChildItem third_party\rapidocr\RapidOcrOnnx.dll, third_party\mpv\*.dll | ForEach-Object { New-ImportLib $_.FullName }
+          $h = "third_party\mpv\include\mpv"
+          if (!(Test-Path "$h\client.h")) {
+            New-Item -ItemType Directory -Force $h | Out-Null
+            Invoke-WebRequest "https://raw.githubusercontent.com/mpv-player/mpv/master/include/mpv/client.h" -OutFile "$h\client.h"
+          }
+          Get-ChildItem third_party -Recurse -Include *.lib | Select-Object FullName, Length
+          $global:LASTEXITCODE = 0
+
       - name: Configure
         if: steps.deps.outputs.found == 'true'
         shell: pwsh
