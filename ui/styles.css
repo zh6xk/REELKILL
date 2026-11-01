@@ -50,3 +50,7 @@ i[data-h=nw]{left:-6px;top:-6px;cursor:nwse-resize}i[data-h=ne]{right:-6px;top:-
 i[data-h=sw]{left:-6px;bottom:-6px;cursor:nesw-resize}i[data-h=se]{right:-6px;bottom:-6px;cursor:nwse-resize}
 .num4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:12px}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* dialog ROI: scrollbar gelap dan tidak melebihi tinggi jendela */
+:root{color-scheme:dark}
+dialog{max-height:92vh;overflow:auto}

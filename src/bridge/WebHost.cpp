@@ -266,7 +266,8 @@ LRESULT CALLBACK WebHost::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lP
         }
     }
 
-    return DefWindowProc(hwnd, uMsg, wParam, lParam);
+    // Jendela dibuat dengan CreateWindowExW: wajib DefWindowProcW (tanpa UNICODE, DefWindowProc = versi A, judul jadi "R")
+    return DefWindowProcW(hwnd, uMsg, wParam, lParam);
 }
 
 void WebHost::OnResize() {
@@ -825,11 +826,16 @@ void WebHost::HandleShowInExplorer() {
 }
 
 void WebHost::HandleExtractFrameInfo(const std::string& videoPath) {
-    if (videoPath.empty() || !fs::exists(Utf8ToUtf16(videoPath))) return;
+    if (videoPath.empty()) return;
+    if (!fs::exists(Utf8ToUtf16(videoPath))) { SendError("File video tidak ditemukan: " + videoPath); return; }
 
     try {
         cv::VideoCapture cap(videoPath);
-        if (cap.isOpened()) {
+        if (!cap.isOpened()) {
+            SendError("OpenCV tidak bisa membuka video ini (codec/backend tidak tersedia): " + videoPath);
+            return;
+        }
+        {
             int w = (int)cap.get(cv::CAP_PROP_FRAME_WIDTH);
             int h = (int)cap.get(cv::CAP_PROP_FRAME_HEIGHT);
 
