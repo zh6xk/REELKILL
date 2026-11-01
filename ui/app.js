@@ -87,6 +87,14 @@ $('#player').ontimeupdate=e=>{const t=e.target.currentTime;$('#ph').style.left=t
 
 /* ---------- ROI ---------- */
 const dlg=$('#roiDlg');let roiBackup;
+S.roiTime=0;S.roiDur=0;let frameTimer=null;
+function requestFrame(t){
+  S.roiTime=Math.max(0,S.roiDur?Math.min(t,S.roiDur):t);
+  $('#roiSeek').value=S.roiTime;$('#roiTime').textContent=fmt(S.roiTime)+' / '+fmt(S.roiDur);
+  clearTimeout(frameTimer);
+  frameTimer=setTimeout(()=>Bridge.send('getFrame',{video:$('#inVideo').value,time:S.roiTime}),120);}
+$('#roiSeek').oninput=e=>requestFrame(+e.target.value);
+document.querySelectorAll('[data-seek]').forEach(b=>b.onclick=()=>requestFrame(S.roiTime+ +b.dataset.seek));
 function drawRoi(){const r=S.roi,f=S.frame,b=$('#roiBox');
   Object.assign(b.style,{left:r.x/f.w*100+'%',top:r.y/f.h*100+'%',width:r.w/f.w*100+'%',height:r.h/f.h*100+'%'});
   ['x','y','w','h'].forEach(k=>$('#roi'+k.toUpperCase()).value=Math.round(r[k]))}
@@ -114,7 +122,10 @@ Bridge.on(m=>{const p=m.payload||{};switch(m.type){
   case'clipFound':addRecent(p);addLog('['+fmt(p.start)+'] kill terdeteksi');break;
   case'scanDone':S.scanning=false;$('#btnStart').disabled=false;$('#btnStop').disabled=true;setStatus(p.stopped?'Dihentikan':'Selesai');break;
   case'fileSelected':{const el=$(p.target==='video'?'#inVideo':'#inOutput');if(el)el.value=p.path;break;}
-  case'frameInfo':S.frame={w:p.width,h:p.height};
+  case'frameInfo':S.frame={w:p.width,h:p.height};$('#roiStage').style.aspectRatio=p.width+'/'+p.height;
+    if(p.duration){S.roiDur=p.duration;$('#roiSeek').max=p.duration;}
+    if(p.time!=null)$('#roiTime').textContent=fmt(p.time)+' / '+fmt(S.roiDur);
+    drawRoi();
     if(p.previewUrl){const s=$('#roiStage');s.style.backgroundImage='url('+p.previewUrl+')';s.style.backgroundSize='contain';s.style.backgroundRepeat='no-repeat';s.style.backgroundPosition='center';}
     break;
   case'resultsLoaded':S.clips=p.clips;S.picked=new Set(S.clips.keys());S.duration=p.duration;

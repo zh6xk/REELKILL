@@ -54,3 +54,4 @@ i[data-h=sw]{left:-6px;bottom:-6px;cursor:nesw-resize}i[data-h=se]{right:-6px;bo
 /* dialog ROI: scrollbar gelap dan tidak melebihi tinggi jendela */
 :root{color-scheme:dark}
 dialog{max-height:92vh;overflow:auto}
+#roiSeek{accent-color:var(--cy);min-width:0}

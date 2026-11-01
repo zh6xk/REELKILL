@@ -41,6 +41,7 @@ Bentuk: `{"v":1,"type":"...","payload":{...}}`
 | `exportClips` | `{clips:[{start,end}], merge?:bool}` (detik; merge default true) | ekspor lossless (ffmpeg) |
 | `showInExplorer` | `{}` | buka folder output |
 | `saveRoiPreset` / `deleteRoiPreset` | `{name,roi}` / `{name}` | kelola preset |
+| `getFrame` | `{video,time}` (detik) | minta frame preview ROI pada waktu tertentu |
 
 **C++ → UI**
 
@@ -51,7 +52,7 @@ Bentuk: `{"v":1,"type":"...","payload":{...}}`
 | `clipFound` | `{start,end,score}` |
 | `scanDone` | `{stopped?}` |
 | `fileSelected` | `{target,path}` |
-| `frameInfo` | `{width,height}` (resolusi video, untuk ROI) |
+| `frameInfo` | `{width,height,previewUrl?,duration?,time?}` (resolusi video dan frame preview ROI) |
 | `resultsLoaded` | `{videoUrl,duration,clips:[{start,end,label,score}]}` |
 | `toast` / `error` | `{message}` |
 

@@ -173,6 +173,8 @@ WebHost::WebHost()
       m_controller(nullptr), m_webview(nullptr), m_isWebViewReady(false) {}
 
 WebHost::~WebHost() {
+    m_closing.store(true);
+    if (m_frameThread.joinable()) m_frameThread.join();
     if (m_webview) { m_webview->Release(); m_webview = nullptr; }
     if (m_controller) { m_controller->Release(); m_controller = nullptr; }
     if (m_env) { m_env->Release(); m_env = nullptr; }
@@ -448,11 +450,14 @@ void WebHost::SendError(const std::string& message) {
     SendJsonToUI(ss.str());
 }
 
-void WebHost::SendFrameInfo(int width, int height, const std::string& previewUrl) {
+void WebHost::SendFrameInfo(int width, int height, const std::string& previewUrl,
+                            double duration, double time) {
     std::ostringstream ss;
     ss << "{\"v\":1,\"type\":\"frameInfo\",\"payload\":{"
        << "\"width\":" << width << ","
-       << "\"height\":" << height;
+       << "\"height\":" << height
+       << ",\"duration\":" << duration
+       << ",\"time\":" << time;
     if (!previewUrl.empty()) {
         ss << ",\"previewUrl\":\"" << EscapeJsonString(previewUrl) << "\"";
     }
@@ -515,6 +520,8 @@ void WebHost::HandleWebMessage(const std::string& json) {
         HandleSaveRoiPreset(json);
     } else if (type == "deleteRoiPreset") {
         HandleDeleteRoiPreset(json);
+    } else if (type == "getFrame") {
+        HandleGetFrame(json);
     }
 }
 
@@ -826,6 +833,51 @@ void WebHost::HandleShowInExplorer() {
 }
 
 void WebHost::HandleExtractFrameInfo(const std::string& videoPath) {
+    RequestFrame(videoPath, 0.0);
+}
+
+void WebHost::HandleGetFrame(const std::string& json) {
+    std::string video = ExtractJsonString(json, "video");
+    if (video.empty()) video = m_currentLoadedVideo;
+    double t = ExtractJsonNumber(json, "time", 0.0);
+    if (t < 0.0) t = 0.0;
+    RequestFrame(video, t);
+}
+
+// Seek bisa lambat, jadi permintaan frame diproses di thread terpisah dan hanya
+// permintaan terbaru yang dikerjakan (permintaan lama yang sempat tertimpa dilewati).
+void WebHost::RequestFrame(const std::string& video, double timeSec) {
+    if (video.empty() || m_closing.load()) return;
+    std::lock_guard<std::mutex> lk(m_frameMutex);
+    m_frameVideo = video;
+    m_frameTime = timeSec;
+    m_framePending = true;
+    if (!m_frameWorkerRunning) {
+        if (m_frameThread.joinable()) m_frameThread.join();
+        m_frameWorkerRunning = true;
+        m_frameThread = std::thread(&WebHost::FrameWorker, this);
+    }
+}
+
+void WebHost::FrameWorker() {
+    for (;;) {
+        std::string video;
+        double t = 0.0;
+        {
+            std::lock_guard<std::mutex> lk(m_frameMutex);
+            if (!m_framePending || m_closing.load()) {
+                m_frameWorkerRunning = false;
+                return;
+            }
+            video = m_frameVideo;
+            t = m_frameTime;
+            m_framePending = false;
+        }
+        RenderFrame(video, t);
+    }
+}
+
+void WebHost::RenderFrame(const std::string& videoPath, double timeSec) {
     if (videoPath.empty()) return;
     if (!fs::exists(Utf8ToUtf16(videoPath))) { SendError("File video tidak ditemukan: " + videoPath); return; }
 
@@ -838,37 +890,39 @@ void WebHost::HandleExtractFrameInfo(const std::string& videoPath) {
         {
             int w = (int)cap.get(cv::CAP_PROP_FRAME_WIDTH);
             int h = (int)cap.get(cv::CAP_PROP_FRAME_HEIGHT);
+            double fps = cap.get(cv::CAP_PROP_FPS);
+            double totalFrames = cap.get(cv::CAP_PROP_FRAME_COUNT);
+            double duration = (fps > 0.0 && totalFrames > 0.0) ? totalFrames / fps : 0.0;
+            if (timeSec > 0.0) {
+                if (duration > 0.0 && timeSec > duration - 0.1) timeSec = (duration > 0.1) ? duration - 0.1 : 0.0;
+                cap.set(cv::CAP_PROP_POS_MSEC, timeSec * 1000.0);
+            }
 
             std::string previewUrl = "";
             cv::Mat frame;
-            // Baca frame pertama atau frame detik ke-1 untuk preview
             if (cap.read(frame) && !frame.empty()) {
-                // Resize preview jika terlalu besar (maks width 1280)
-                if (frame.cols > 1280) {
-                    double scale = 1280.0 / frame.cols;
-                    cv::resize(frame, frame, cv::Size(), scale, scale);
-                }
                 std::vector<uchar> buf;
                 std::vector<int> params = { cv::IMWRITE_JPEG_QUALITY, 80 };
                 if (cv::imencode(".jpg", frame, buf, params)) {
-                    static const char b64table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-                    std::string b64 = "";
+                    // Base64 encode
+                    static const char* b64chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+                    std::string b64;
                     int val = 0, valb = -6;
                     for (uchar c : buf) {
                         val = (val << 8) + c;
                         valb += 8;
                         while (valb >= 0) {
-                            b64.push_back(b64table[(val >> valb) & 0x3F]);
+                            b64.push_back(b64chars[(val >> valb) & 0x3F]);
                             valb -= 6;
                         }
                     }
-                    if (valb > -6) b64.push_back(b64table[((val << 8) >> (valb + 8)) & 0x3F]);
+                    if (valb > -6) b64.push_back(b64chars[((val << 8) >> (valb + 8)) & 0x3F]);
                     while (b64.size() % 4) b64.push_back('=');
                     previewUrl = "data:image/jpeg;base64," + b64;
                 }
             }
             cap.release();
-            SendFrameInfo(w, h, previewUrl);
+            SendFrameInfo(w, h, previewUrl, duration, timeSec);
         }
     } catch (...) {}
 }

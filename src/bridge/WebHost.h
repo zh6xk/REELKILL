@@ -5,6 +5,8 @@
 #include <functional>
 #include <memory>
 #include <atomic>
+#include <thread>
+#include <mutex>
 #include "../core/Scanner.h"
 #include "../core/Exporter.h"
 
@@ -37,7 +39,8 @@ public:
     void SendFileSelected(const std::string& target, const std::string& path);
     void SendToast(const std::string& message);
     void SendError(const std::string& message);
-    void SendFrameInfo(int width, int height, const std::string& previewUrl = "");
+    void SendFrameInfo(int width, int height, const std::string& previewUrl = "",
+                       double duration = 0, double time = 0);
     void SendResultsLoaded(const std::string& videoUrl, double duration,
                            const std::vector<ExportClip>& clips);
 
@@ -68,6 +71,10 @@ private:
     void HandleSaveRoiPreset(const std::string& json);
     void HandleDeleteRoiPreset(const std::string& json);
     void HandleExtractFrameInfo(const std::string& videoPath);
+    void HandleGetFrame(const std::string& json);
+    void RequestFrame(const std::string& video, double timeSec);
+    void FrameWorker();
+    void RenderFrame(const std::string& videoPath, double timeSec);
 
     // Mapping virtual host media.reelkill secara dinamis ke folder video
     void MapMediaFolder(const std::wstring& folderPath);
@@ -86,6 +93,15 @@ private:
     std::string m_outputFolder;
 
     // Backend Core Engine
+    // Preview frame ROI (seek) diproses satu per satu di thread terpisah
+    std::mutex m_frameMutex;
+    std::string m_frameVideo;
+    double m_frameTime = 0.0;
+    bool m_framePending = false;
+    bool m_frameWorkerRunning = false;
+    std::thread m_frameThread;
+    std::atomic<bool> m_closing{false};
+
     Scanner m_scanner;
     Exporter m_exporter;
 };
